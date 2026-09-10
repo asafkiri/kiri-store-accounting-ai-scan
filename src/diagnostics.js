@@ -4,6 +4,7 @@ const messages = {
   "auth/id-token-revoked": "Firebase ID token revoked",
   "auth/invalid-id-token": "Firebase ID token invalid",
   "auth/invalid-argument": "Firebase token verification failed",
+  "auth/argument-error": "Firebase token verification failed",
   "auth/user-disabled": "Firebase user disabled",
   "auth/user-not-found": "Firebase user not found",
   "auth/insufficient-permission": "Firebase authentication permission denied",
@@ -46,10 +47,10 @@ export function isRejectedToken(error) {
     ].includes(error?.code)
   )
     return true;
-  // Admin also wraps certificate-fetch/network failures in invalid-argument.
+  // Admin versions use argument-error or invalid-argument, including for key-fetch failures.
   // Only its known token-content/signature diagnostics prove an invalid token.
   return (
-    error?.code === "auth/invalid-argument" &&
+    ["auth/argument-error", "auth/invalid-argument"].includes(error?.code) &&
     /^(?:Decoding Firebase ID token failed\.|Firebase ID token has |verifyIdToken\(\) expects )/.test(
       error.message || "",
     )

@@ -169,6 +169,7 @@ test("authentication infrastructure failures return 503 and a safe category inst
     "auth/internal-error",
     "unknown-code",
     "auth/invalid-argument",
+    "auth/argument-error",
   ]) {
     const { request, logs, store } = await setup(t, async () => {
       throw Object.assign(
@@ -197,6 +198,7 @@ test("expired, revoked, malformed and disabled-user tokens stay rejected as 401"
     "auth/user-disabled",
     "auth/user-not-found",
     "auth/invalid-argument",
+    "auth/argument-error",
   ]) {
     const { request, logs } = await setup(t, async () => {
       throw Object.assign(Error("Decoding Firebase ID token failed."), {
@@ -226,4 +228,23 @@ test("internal errors carry useful safe diagnostics, never raw exception content
     /private invoice|sk-test-secret|15555550123/,
   );
   assert.doesNotMatch((await r.json()).error.message, /טיוטה/);
+});
+
+test("actual Admin SDK malformed-token errors are rejected as 401 without contacting Firebase", async (t) => {
+  const { initializeApp, deleteApp } = await import("firebase-admin/app");
+  const { getAuth } = await import("firebase-admin/auth");
+  const app = initializeApp(
+    { projectId: "demo-kiri-accounting" },
+    "invalid-token-regression",
+  );
+  t.after(() => deleteApp(app));
+  const { request, logs } = await setup(t, (token) =>
+    getAuth(app).verifyIdToken(token, true),
+  );
+  const response = await request("/api/v1/me", {
+    headers: { Authorization: "Bearer invalid-test-token" },
+  });
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error.code, "INVALID_TOKEN");
+  assert.equal(logs[0].errorCategory, "auth/argument-error");
 });
