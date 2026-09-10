@@ -30,6 +30,12 @@ export class MemoryStore {
           if (wrote) throw new Error("Firestore reads must precede writes");
           return structuredClone(staged.get(k) || null);
         },
+        list: async (collection) => {
+          if (wrote) throw new Error("Firestore reads must precede writes");
+          return [...staged]
+            .filter(([key]) => key.startsWith(collection + "/"))
+            .map(([, value]) => structuredClone(value));
+        },
         set: (k, v) => {
           wrote = true;
           staged.set(k, structuredClone(v));

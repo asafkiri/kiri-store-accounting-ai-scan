@@ -76,6 +76,8 @@ export function invoice(v) {
     "source",
     "scanJobId",
     "reviewConfirmed",
+    "newSupplier",
+    "reactivateSupplier",
   ]);
   if (!Array.isArray(v.deductions) || v.deductions.length > 30)
     fail(400, "INVALID_INPUT", "אפשר להוסיף עד 30 שורות הפחתה.");
@@ -117,6 +119,25 @@ export function invoice(v) {
   };
   if (source === "ai" && !result.scanJobId)
     fail(400, "REVIEW_REQUIRED", "לא נמצאה סריקה לבדיקה.");
+  if (v.newSupplier !== undefined && v.reactivateSupplier !== undefined)
+    fail(400, "INVALID_INPUT", "יש לבחור פתיחת ספק או הפעלה מחדש.");
+  if (v.newSupplier !== undefined) {
+    object(v.newSupplier, ["name"]);
+    result.newSupplier = supplier({
+      name: v.newSupplier.name,
+      notes: "",
+      contact: "",
+      active: true,
+    });
+  }
+  if (v.reactivateSupplier !== undefined) {
+    object(v.reactivateSupplier, ["expectedVersion"]);
+    result.reactivateSupplier = {
+      expectedVersion: version(v.reactivateSupplier.expectedVersion),
+    };
+    if (!result.reactivateSupplier.expectedVersion)
+      fail(400, "INVALID_VERSION", "יש לבחור ספק קיים להפעלה מחדש.");
+  }
   return result;
 }
 export function payment(v) {

@@ -1,10 +1,11 @@
-const normalize = (s) =>
-  (s || "")
-    .normalize("NFKC")
-    .replace(/[\s\-–״"'׳.,]/g, "")
-    .toLocaleLowerCase("he");
+import {
+  normalizeDocumentText as normalize,
+  normalizeSupplierName,
+} from "./supplier-name.js";
 export function reconcile(rows, invoices, suppliers) {
-  const names = new Map(suppliers.map((s) => [s.id, normalize(s.name)]));
+  const names = new Map(
+    suppliers.map((s) => [s.id, normalizeSupplierName(s.name)]),
+  );
   const used = new Set();
   const results = rows.map((row, index) => {
     const possible = invoices.filter(
@@ -13,8 +14,9 @@ export function reconcile(rows, invoices, suppliers) {
         !used.has(i.id) &&
         ((normalize(row.documentNumber) &&
           normalize(i.documentNumber) === normalize(row.documentNumber)) ||
-          (normalize(row.supplierName) &&
-            names.get(i.supplierId) === normalize(row.supplierName) &&
+          (normalizeSupplierName(row.supplierName) &&
+            names.get(i.supplierId) ===
+              normalizeSupplierName(row.supplierName) &&
             row.invoiceDate === i.invoiceDate &&
             row.totalAgorot === i.totalAgorot)),
     );
@@ -23,7 +25,7 @@ export function reconcile(rows, invoices, suppliers) {
         !row.needsReview &&
         row.vatAgorot !== null &&
         row.totalAgorot !== null &&
-        normalize(row.supplierName) === names.get(i.supplierId) &&
+        normalizeSupplierName(row.supplierName) === names.get(i.supplierId) &&
         normalize(row.documentNumber) === normalize(i.documentNumber) &&
         row.invoiceDate === i.invoiceDate &&
         row.totalAgorot === i.totalAgorot &&
@@ -45,16 +47,14 @@ export function reconcile(rows, invoices, suppliers) {
       status: "needsReview",
       label: "לא נמצאה התאמה — דורש בדיקה",
       invoiceId: null,
-      candidates: possible
-        .slice(0, 5)
-        .map((i) => ({
-          id: i.id,
-          supplierId: i.supplierId,
-          documentNumber: i.documentNumber,
-          invoiceDate: i.invoiceDate,
-          totalAgorot: i.totalAgorot,
-          vatAgorot: i.vatAgorot,
-        })),
+      candidates: possible.slice(0, 5).map((i) => ({
+        id: i.id,
+        supplierId: i.supplierId,
+        documentNumber: i.documentNumber,
+        invoiceDate: i.invoiceDate,
+        totalAgorot: i.totalAgorot,
+        vatAgorot: i.vatAgorot,
+      })),
     };
   });
   return {
