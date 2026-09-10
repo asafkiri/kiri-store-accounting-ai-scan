@@ -43,6 +43,10 @@ export function firebaseServices(config) {
               const s = await native.get(ref(key));
               return s.exists ? normalize(s.data()) : null;
             },
+            list: async (collection) =>
+              (await native.get(root.collection(collection))).docs.map((d) =>
+                normalize(d.data()),
+              ),
             set: (key, data) => native.set(ref(key), data),
             stamp: () => FieldValue.serverTimestamp(),
           }),

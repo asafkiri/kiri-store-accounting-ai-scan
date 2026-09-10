@@ -180,10 +180,63 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     "POST",
   );
   assert.equal(scan.status, 200, await scan.clone().text());
-  assert.equal((await scan.json()).result.vatAgorot, 1800);
+  const scanResult = await scan.json();
+  assert.equal(scanResult.result.vatAgorot, 1800);
   const snapshot = await (await api("sync")).json();
   assert.equal(snapshot.invoices.length, 1);
   assert.equal(snapshot.dailyCash[0].ravKavAgorot, 6789);
+  const inlineBody = {
+    expectedVersion: 0,
+    mutationId: randomUUID(),
+    data: {
+      ...inv(),
+      supplierId: "supplier-inline-001",
+      source: "ai",
+      scanJobId: scanResult.id,
+      newSupplier: { name: "ספק מסריקה אמולטור" },
+    },
+  };
+  const inlineResponse = await api("invoices/invoice-inline-001", inlineBody);
+  assert.equal(inlineResponse.status, 200, await inlineResponse.clone().text());
+  const inline = await inlineResponse.json();
+  assert.equal(inline.record.createdBy, supplier.createdBy);
+  assert.equal(inline.relatedRecords[0].record.createdBy, supplier.createdBy);
+  assert.equal(inline.relatedRecords[0].record.createdFrom, "scan");
+  assert.equal(
+    (await (await api("invoices/invoice-inline-001", inlineBody)).json())
+      .replayed,
+    true,
+  );
+  const delta = await (await api("sync?since=" + snapshot.version)).json();
+  assert.equal(delta.invoices.length, 1);
+  assert.equal(delta.suppliers.length, 1);
+  assert.equal(delta.suppliers[0].id, inline.record.supplierId);
+  const racing = await Promise.all(
+    [1, 2].map((n) =>
+      api("invoices/invoice-race-00" + n, {
+        expectedVersion: 0,
+        mutationId: randomUUID(),
+        data: {
+          ...inv(),
+          supplierId: "supplier-race-00" + n,
+          newSupplier: { name: n === 1 ? "שם מקביל בע״מ" : "שם מקביל" },
+        },
+      }),
+    ),
+  );
+  assert.deepEqual(racing.map((r) => r.status).sort(), [200, 409]);
+  const conflict = await racing.find((r) => r.status === 409).json();
+  assert.equal(conflict.error.code, "SUPPLIER_EXISTS");
+  assert.match(conflict.error.details.supplierId, /^supplier-race-00[12]$/);
+  const afterRace = await (await api("sync")).json();
+  assert.equal(
+    afterRace.suppliers.filter((s) => s.id.startsWith("supplier-race-")).length,
+    1,
+  );
+  assert.equal(
+    afterRace.invoices.filter((s) => s.id.startsWith("invoice-race-")).length,
+    1,
+  );
   const firestoreUrl =
     "http://" +
     process.env.FIRESTORE_EMULATOR_HOST +

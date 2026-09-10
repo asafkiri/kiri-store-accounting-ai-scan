@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { fail } from "./errors.js";
 import * as v from "./validation.js";
+import { checkSupplierName, prepareInvoiceSupplier } from "./suppliers.js";
 export const hash = (value) =>
   createHash("sha256")
     .update(
@@ -39,13 +40,20 @@ export class AccountingService {
     uid,
     data,
     action = "save",
+    supplierIntent = null,
   }) {
     v.id(id);
     v.id(mutationId);
     v.version(expectedVersion);
     const key = collection + "/" + id,
       receiptKey = "mutations/" + mutationId;
-    const fingerprint = hash({ key, expectedVersion, data, action });
+    const fingerprint = hash({
+      key,
+      expectedVersion,
+      data,
+      action,
+      ...(supplierIntent ? { supplierIntent } : {}),
+    });
     const reply = await this.store.transaction(async (tx) => {
       const receipt = await tx.get(receiptKey);
       if (receipt) {
@@ -55,7 +63,12 @@ export class AccountingService {
             "IDEMPOTENCY_CONFLICT",
             "בקשת השמירה השתנתה. יש לבדוק את הנתונים ולנסות מחדש.",
           );
-        return { replayed: true, id };
+        return {
+          replayed: true,
+          id,
+          relatedPaths: receipt.relatedPaths || [],
+          supplierAction: receipt.supplierAction || null,
+        };
       }
       const previous = await tx.get(key);
       const dataVersion = await tx.get("system/dataVersion");
@@ -86,15 +99,18 @@ export class AccountingService {
         });
       if (action === "delete") next.deletedAt = tx.stamp();
       if (action === "restore") next.deletedAt = null;
+      let supplierChange = null;
+      if (collection === "suppliers")
+        await checkSupplierName(tx, next, previous);
       if (collection === "invoices") {
         if (action === "save") {
-          const supplier = await tx.get("suppliers/" + next.supplierId);
-          if (
-            !supplier ||
-            supplier.deletedAt ||
-            (!supplier.active && previous?.supplierId !== next.supplierId)
-          )
-            fail(400, "SUPPLIER_MISSING", "יש לבחור ספק פעיל.");
+          supplierChange = await prepareInvoiceSupplier(
+            tx,
+            next,
+            previous,
+            supplierIntent,
+            uid,
+          );
           for (const aid of next.attachmentIds)
             if (!(await tx.get("documents/" + aid)))
               fail(
@@ -146,13 +162,21 @@ export class AccountingService {
           invoiceId: action === "delete" ? null : id,
         });
       }
-      const sequence = (dataVersion?.version || 0) + 1;
+      const relatedPaths = supplierChange
+        ? ["suppliers/" + supplierChange.record.id]
+        : [];
+      if (supplierChange) tx.set(relatedPaths[0], supplierChange.record);
+      let sequence = dataVersion?.version || 0;
+      for (const entity of [...relatedPaths, key]) {
+        sequence++;
+        const changeId = String(sequence).padStart(16, "0");
+        tx.set("changes/" + changeId, {
+          id: changeId,
+          version: sequence,
+          entity,
+        });
+      }
       tx.set("system/dataVersion", { id: "dataVersion", version: sequence });
-      tx.set("changes/" + String(sequence).padStart(16, "0"), {
-        id: String(sequence).padStart(16, "0"),
-        version: sequence,
-        entity: key,
-      });
       tx.set(key, next);
       tx.set(receiptKey, {
         id: mutationId,
@@ -162,10 +186,37 @@ export class AccountingService {
         at: tx.stamp(),
         by: uid,
         before: previous || null,
+        ...(supplierChange
+          ? {
+              relatedPaths,
+              supplierAction: supplierChange.action,
+              supplierBefore: supplierChange.before,
+            }
+          : {}),
       });
-      return { replayed: false, id };
+      return {
+        replayed: false,
+        id,
+        relatedPaths,
+        supplierAction: supplierChange?.action || null,
+      };
     });
-    return { ...reply, record: await this.store.get(key) };
+    const { relatedPaths, supplierAction, ...result } = reply;
+    return {
+      ...result,
+      record: await this.store.get(key),
+      ...(relatedPaths.length
+        ? {
+            supplierAction,
+            relatedRecords: await Promise.all(
+              relatedPaths.map(async (path) => ({
+                path,
+                record: await this.store.get(path),
+              })),
+            ),
+          }
+        : {}),
+    };
   }
   async saveSupplier(id, body, uid) {
     v.object(body, ["expectedVersion", "mutationId", "data"]);
@@ -180,13 +231,19 @@ export class AccountingService {
   }
   async saveInvoice(id, body, uid) {
     v.object(body, ["expectedVersion", "mutationId", "data"]);
+    const { newSupplier, reactivateSupplier, ...data } = v.invoice(body.data);
     return this.mutate({
       collection: "invoices",
       id,
       expectedVersion: body.expectedVersion,
       mutationId: body.mutationId,
       uid,
-      data: v.invoice(body.data),
+      data,
+      supplierIntent: newSupplier
+        ? { newSupplier }
+        : reactivateSupplier
+          ? { reactivateSupplier }
+          : null,
     });
   }
   async saveCash(id, body, uid) {
