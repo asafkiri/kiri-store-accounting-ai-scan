@@ -140,4 +140,4 @@ Structured Outputs קבוע + validation עצמאי בשרת. שדות חסרי�
 - [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
 - [OpenAI file inputs](https://developers.openai.com/api/docs/guides/file-inputs)
 
-תלות מעבר: `gaxios@6.7.1` משתמשת רק ב־`uuid.v4`; הוגדר override ל־`uuid@11.1.1` כדי להסיר גרסה עם חולשת bounds check. החיבור ל־Storage נבדק מחדש באמולטור אחרי העדכון.
+תלות מעבר: `gaxios@6.7.1` משתמשת רק ב־`uuid.v4`; הוגדר override ל־`uuid@11.1.1` כדי להסיר גרסה עם חולשת bounds check. ה־override מוגדר ישירות לפי שם החבילה, כך שגם npm 10 שמגיע עם Node 22 ב־Docker מכבד אותו בהתקנה נקייה. החיבור ל־Storage נבדק מחדש באמולטור אחרי העדכון.
