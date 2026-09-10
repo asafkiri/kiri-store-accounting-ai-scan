@@ -1,0 +1,26 @@
+{
+  "name": "kiri-store-accounting-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch --env-file-if-exists=.env src/server.js",
+    "build": "node scripts/check.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "test:emulator": "node --test test/emulator.integration.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "14.4.0",
+    "pdf-lib": "1.17.1",
+    "sharp": "0.35.4"
+  },
+  "overrides": {
+    "gaxios@6.7.1": {
+      "uuid": "11.1.1"
+    }
+  }
+}

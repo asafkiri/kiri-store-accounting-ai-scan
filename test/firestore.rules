@@ -1,0 +1,7 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Only the authorized Cloud Run backend accesses business data through Admin SDK.
+    match /{document=**} { allow read, write: if false; }
+  }
+}

@@ -1,0 +1,25 @@
+name: API checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npx --yes firebase-tools@14.16.0 emulators:exec --project demo-kiri-accounting --config firebase.emulators.json --only auth,firestore,storage 'npm run test:emulator'
+      - run: docker build -t kiri-accounting-api:test .

@@ -1,0 +1,7 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // No public reads, no download tokens, no direct client uploads.
+    match /{allPaths=**} { allow read, write: if false; }
+  }
+}
