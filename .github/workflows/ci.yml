@@ -10,6 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: asafkiri/kiri-store-accounting
+          ref: main
+          path: deployed-app
+      - run: node scripts/check-rules.mjs deployed-app
       - uses: actions/setup-node@v4
         with:
           node-version: 22

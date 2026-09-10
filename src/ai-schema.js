@@ -57,7 +57,10 @@ export const invoiceJsonSchema = {
       },
     },
     evidence: evidenceSchema,
-    uncertainFields: { type: "array", items: { type: "string", enum: fields } },
+    uncertainFields: {
+      type: "array",
+      items: { type: "string", enum: [...fields, "documentType"] },
+    },
     needsReview: { type: "boolean" },
     warnings: { type: "array", items: { type: "string" } },
   },
@@ -127,10 +130,18 @@ export function matchesSchema(value, schema) {
 }
 export function hasExplicitZeroVat(evidence = "") {
   if (!evidence) return false;
-  const label = /(?:מע[״"'׳]?מ|VAT|tax)/iu.test(evidence);
-  const zero = /(?:^|[^0-9.,])0(?:[.,]0{1,2})?(?=$|[^0-9.,])/u.test(evidence);
-  const exempt = /(?:ללא\s*מע[״"'׳]?מ|פטור\s*(?:ממע[״"'׳]?מ|מע[״"'׳]?מ)|no\s*VAT|VAT\s*exempt|tax\s*exempt)/iu.test(evidence);
-  return (label && zero) || exempt;
+  const label = String.raw`(?:מע[״"'׳]?מ|מ\.ע\.מ\.?|\bVAT\b|\btax\b)`;
+  const exempt = new RegExp(
+    String.raw`(?:עוסק\s+פטור|ללא\s*${label}|פטור\s*(?:מ)?${label}|\bno\s+VAT\b|\bVAT\s+exempt\b|\btax\s+exempt\b)`,
+    "iu",
+  );
+  // A zero must immediately follow its own VAT label, on the same line.
+  // No intervening rate, item count, decimal suffix or unrelated text.
+  const zero = new RegExp(
+    String.raw`${label}[^\S\r\n]*[:=–-]?[^\S\r\n]*₪?[^\S\r\n]*0(?:[.,]0{1,2})?(?![\d.,])[^\S\r\n]*(?:%|₪|ILS|ש[״"]ח)?[^\S\r\n]*(?=$|[\r\n;|])`,
+    "iu",
+  );
+  return exempt.test(evidence) || zero.test(evidence);
 }
 export function validateInvoiceExtraction(raw) {
   if (!matchesSchema(raw, invoiceJsonSchema))
@@ -141,6 +152,7 @@ export function validateInvoiceExtraction(raw) {
     );
   const result = structuredClone(raw),
     uncertain = new Set(raw.uncertainFields);
+  if (!result.documentType) uncertain.add("documentType");
   for (const key of fields) {
     // An explicit printed excerpt is required for every populated field, particularly zero VAT.
     if (result[key] !== null && !result.evidence[key]?.trim()) {
@@ -149,7 +161,10 @@ export function validateInvoiceExtraction(raw) {
     }
     if (result[key] === null) uncertain.add(key);
   }
-  if (result.vatAgorot === 0 && !hasExplicitZeroVat(result.evidence.vatAgorot)) {
+  if (
+    result.vatAgorot === 0 &&
+    !hasExplicitZeroVat(result.evidence.vatAgorot)
+  ) {
     result.vatAgorot = null;
     uncertain.add("vatAgorot");
   }
@@ -204,7 +219,8 @@ export function validateReportExtraction(raw) {
       row.totalAgorot = null;
       row.vatAgorot = null;
     }
-    if (row.vatAgorot === 0 && !hasExplicitZeroVat(row.evidence)) row.vatAgorot = null;
+    if (row.vatAgorot === 0 && !hasExplicitZeroVat(row.evidence))
+      row.vatAgorot = null;
     row.needsReview =
       row.needsReview ||
       [

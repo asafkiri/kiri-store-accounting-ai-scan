@@ -6,6 +6,7 @@ import { PDFDocument } from "pdf-lib";
 import {
   validateInvoiceExtraction,
   validateReportExtraction,
+  hasExplicitZeroVat,
 } from "../src/ai-schema.js";
 import { callLuna, ScanService } from "../src/ai.js";
 import { DocumentService, validateFiles } from "../src/files.js";
@@ -257,14 +258,131 @@ test("optional accountant report preserves missing VAT", () => {
   assert.equal(r.needsReview, true);
 });
 
-test('a fractional zero is not evidence of zero VAT',()=>{
-  for(const printed of ['מע״מ 18.0','מע״מ 18.00','VAT 100.0','סכום 0.00']){
-    const raw=aiResult();raw.vatAgorot=0;raw.evidence.vatAgorot=printed;
-    assert.equal(validateInvoiceExtraction(raw).vatAgorot,null);
+test("a fractional zero is not evidence of zero VAT", () => {
+  for (const printed of ["מע״מ 18.0", "מע״מ 18.00", "VAT 100.0", "סכום 0.00"]) {
+    const raw = aiResult();
+    raw.vatAgorot = 0;
+    raw.evidence.vatAgorot = printed;
+    assert.equal(validateInvoiceExtraction(raw).vatAgorot, null);
   }
-  const raw=aiResult();raw.vatAgorot=0;raw.evidence.vatAgorot='ללא מע״מ';
-  assert.equal(validateInvoiceExtraction(raw).vatAgorot,0);
+  const raw = aiResult();
+  raw.vatAgorot = 0;
+  raw.evidence.vatAgorot = "ללא מע״מ";
+  assert.equal(validateInvoiceExtraction(raw).vatAgorot, 0);
 });
-test('production rejects emulator configuration',()=>{
-  assert.throws(()=>configFromEnv({NODE_ENV:'production',FIREBASE_AUTH_EMULATOR_HOST:'127.0.0.1:9099'}));
+test("production rejects emulator configuration", () => {
+  assert.throws(() =>
+    configFromEnv({
+      NODE_ENV: "production",
+      FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099",
+    }),
+  );
+});
+test("zero VAT evidence ties the zero to its own label, without borrowing another line", () => {
+  for (const evidence of [
+    "מע״מ 18% … 0 פריטים",
+    "מע״מ 18%\nסה״כ 0.00",
+    "VAT items 0",
+    "taxable 0",
+    "VAT: 0.18",
+    "VAT: 0,180",
+    "VAT 0 items",
+  ])
+    assert.equal(hasExplicitZeroVat(evidence), false, evidence);
+  for (const evidence of [
+    "עוסק פטור",
+    "מ.ע.מ 0.00",
+    "מע״מ: ₪ 0.00",
+    "VAT 0%",
+    "ללא מע״מ",
+    "VAT exempt",
+  ])
+    assert.equal(hasExplicitZeroVat(evidence), true, evidence);
+});
+test("24MP and 48MP phone photos are safely oriented, resized and encoded for storage", async () => {
+  for (const [width, height] of [
+    [5712, 4284],
+    [8064, 6048],
+  ]) {
+    const bytes = await sharp({
+      create: { width, height, channels: 3, background: "#fff" },
+    })
+      .withMetadata({ orientation: 6 })
+      .jpeg()
+      .toBuffer();
+    const [file] = await validateFiles([
+      { name: "phone.jpg", mime: "image/jpeg", data: bytes.toString("base64") },
+    ]);
+    const m = await sharp(file.bytes).metadata();
+    assert.equal(m.width, 1875);
+    assert.equal(m.height, 2500);
+    assert.equal(m.orientation, undefined);
+    assert.equal(file.mime, "image/jpeg");
+  }
+});
+test("eight phone pages fit the upload ceiling after resizing; PDFs are kept byte-for-byte", async () => {
+  const bytes = await sharp({
+    create: { width: 5712, height: 4284, channels: 3, background: "#fff" },
+  })
+    .jpeg()
+    .toBuffer();
+  const files = await validateFiles(
+    Array.from({ length: 8 }, (_, i) => ({
+      name: `page-${i}.jpg`,
+      mime: "image/jpeg",
+      data: bytes.toString("base64"),
+    })),
+  );
+  assert.equal(files.length, 8);
+  assert.ok(files.reduce((n, f) => n + f.bytes.length, 0) < 12 * 1024 * 1024);
+  assert.ok(files.every((f) => f.bytes.length < bytes.length));
+  const pdf = await PDFDocument.create();
+  pdf.addPage();
+  const original = Buffer.from(await pdf.save());
+  const [kept] = await validateFiles([
+    {
+      name: "doc.pdf",
+      mime: "application/pdf",
+      data: original.toString("base64"),
+    },
+  ]);
+  assert.deepEqual(kept.bytes, original);
+});
+test("normalization keeps white transparency and rejects decompression bombs", async () => {
+  const png = await sharp({
+    create: {
+      width: 10,
+      height: 20,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    },
+  })
+    .png()
+    .toBuffer();
+  const [file] = await validateFiles([
+    {
+      name: "transparent.png",
+      mime: "image/png",
+      data: png.toString("base64"),
+    },
+  ]);
+  assert.equal(file.mime, "image/jpeg");
+  assert.match(file.name, /\.jpg$/);
+  const { data, info } = await sharp(file.bytes)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  assert.equal(info.width, 10);
+  assert.equal(info.height, 20);
+  assert.ok(data.every((v) => v >= 250));
+  const huge = await sharp({
+    create: { width: 10000, height: 8001, channels: 3, background: "#fff" },
+  })
+    .jpeg()
+    .toBuffer();
+  await assert.rejects(
+    validateFiles([
+      { name: "huge.jpg", mime: "image/jpeg", data: huge.toString("base64") },
+    ]),
+    (e) => e.code === "INVALID_FILE",
+  );
 });

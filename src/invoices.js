@@ -66,7 +66,7 @@ export class AccountingService {
         fail(
           409,
           "VERSION_CONFLICT",
-          "הרשומה השתנתה במכשיר אחר. הנתונים שהזנת נשמרו בטיוטה; יש לרענן ולבדוק לפני שמירה נוספת.",
+          "הרשומה עודכנה מאז. הנתונים שהזנת נשמרו בטיוטה; יש לרענן ולבדוק לפני שמירה נוספת.",
         );
       if (action !== "save" && !previous)
         fail(404, "NOT_FOUND", "הרשומה לא נמצאה.");
@@ -227,7 +227,12 @@ export class AccountingService {
       ),
     );
     const after = (await this.store.get("system/dataVersion"))?.version || 0;
-    if (before !== after) fail(409, "BACKUP_CHANGED", "הנתונים השתנו בזמן הכנת הגיבוי. יש לנסות שוב.");
+    if (before !== after)
+      fail(
+        409,
+        "BACKUP_CHANGED",
+        "הנתונים השתנו בזמן הכנת הגיבוי. יש לנסות שוב.",
+      );
     return {
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),

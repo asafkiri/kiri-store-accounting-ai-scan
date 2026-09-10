@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { AppError, fail } from "./errors.js";
-import { authorize } from "./auth.js";
+import { authorizeRequest } from "./authorize-request.js";
+import { safeDiagnostic } from "./diagnostics.js";
 import { AccountingService } from "./invoices.js";
 import { DocumentService } from "./files.js";
 import { ScanService } from "./ai.js";
@@ -41,7 +42,8 @@ export function createHandler({
   return async function handler(req, res) {
     const requestId = randomUUID(),
       start = Date.now();
-    let category = null,
+    let diagnostic = null,
+      category = null,
       route = "unknown";
     const send = (status, data) => {
       res.statusCode = status;
@@ -98,7 +100,7 @@ export function createHandler({
       }
       if (!url.pathname.startsWith("/api/v1/"))
         fail(404, "NOT_FOUND", "הפעולה לא נמצאה.");
-      const user = await authorize(
+      const user = await authorizeRequest(
         req.headers.authorization,
         verifyToken,
         config,
@@ -340,13 +342,16 @@ export function createHandler({
     } catch (error) {
       const known = error instanceof AppError;
       category = known ? error.code : "INTERNAL";
+      diagnostic = known ? error.diagnostic : safeDiagnostic(error);
       if (!res.headersSent)
         send(known ? error.status : 500, {
           error: {
             code: category,
             message: known
               ? error.message
-              : "השמירה או הטעינה לא הושלמה. הנתונים שהזנת נשארו בטיוטה; נסה שוב.",
+              : req.method === "GET"
+                ? "הטעינה לא הושלמה בגלל תקלה בשירות. נסה שוב בעוד רגע."
+                : "השמירה לא הושלמה. הנתונים שהזנת נשארו בטיוטה; נסה שוב.",
             requestId,
             ...(known && error.details ? { details: error.details } : {}),
           },
@@ -361,6 +366,7 @@ export function createHandler({
         durationMs: Date.now() - start,
         model: route.includes("scan") ? config.model : undefined,
         errorCategory: category,
+        ...diagnostic,
       });
     }
   };

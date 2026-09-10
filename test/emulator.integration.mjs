@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
+import { getApps, deleteApp } from "firebase-admin/app";
 import sharp from "sharp";
 import { firebaseServices } from "../src/firebase.js";
 import { createHandler } from "../src/http.js";
@@ -56,6 +57,7 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     bucket: projectId + ".appspot.com",
   };
   const services = firebaseServices(localConfig);
+  t.after(() => Promise.all(getApps().map(deleteApp)));
   const server = createServer(
     createHandler({
       ...services,
@@ -166,7 +168,12 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   const doc = (await uploaded.json()).documents[0];
   const downloaded = await api("documents/" + doc.id);
   assert.equal(downloaded.status, 200);
-  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), png);
+  const storedBytes = Buffer.from(await downloaded.arrayBuffer());
+  assert.equal(createHash("sha256").update(storedBytes).digest("hex"), doc.id);
+  assert.equal(doc.mime, "image/jpeg");
+  const metadata = await sharp(storedBytes).metadata();
+  assert.equal(metadata.width, 24);
+  assert.equal(metadata.height, 24);
   const scan = await api(
     "scan-invoice",
     { jobId: randomUUID(), attachmentIds: [doc.id] },
@@ -200,14 +207,13 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     "/o/" +
     encodeURIComponent("documents/" + doc.id) +
     "?alt=media";
-  assert.ok(
-    [401, 403].includes(
-      (
-        await fetch(storageUrl, {
-          headers: { Authorization: "Firebase " + token },
-        })
-      ).status,
-    ),
+  assert.equal(
+    (
+      await fetch(storageUrl, {
+        headers: { Authorization: "Firebase " + token },
+      })
+    ).status,
+    403,
   );
   assert.ok([401, 403].includes((await fetch(storageUrl)).status));
 });

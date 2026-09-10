@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { createHandler } from "../src/http.js";
 import { MemoryStore, MemoryStorage, config, inv } from "./helpers.js";
-async function setup(t) {
+async function setup(t, verifyOverride) {
   const store = new MemoryStore(),
     logs = [];
   const server = createServer(
@@ -14,6 +14,7 @@ async function setup(t) {
       config,
       log: (e) => logs.push(e),
       verifyToken: async (token) => {
+        if (verifyOverride) return verifyOverride(token);
         if (token === "valid-owner-token")
           return {
             uid: "owner",
@@ -26,7 +27,9 @@ async function setup(t) {
             phone_number: "+15555550124",
             firebase: { sign_in_provider: "phone" },
           };
-        throw Error("invalid token");
+        throw Object.assign(Error("invalid token"), {
+          code: "auth/invalid-id-token",
+        });
       },
     }),
   );
@@ -60,6 +63,11 @@ test("all sensitive endpoints reject missing/invalid token and unauthorized vali
       (await request(path, { headers: { Authorization: "" } })).status,
       401,
     );
+    const invalid = await request(path, {
+      headers: { Authorization: "Bearer invalid-test-token" },
+    });
+    assert.equal(invalid.status, 401);
+    assert.equal((await invalid.json()).error.code, "INVALID_TOKEN");
     assert.equal(
       (
         await request(path, {
@@ -153,4 +161,69 @@ test("bad file and malformed JSON fail before any AI invocation", async (t) => {
   });
   assert.equal(r.status, 400);
   assert.equal((await r.json()).error.code, "INVALID_JSON");
+});
+test("authentication infrastructure failures return 503 and a safe category instead of expired login", async (t) => {
+  for (const code of [
+    "auth/insufficient-permission",
+    "app/network-error",
+    "auth/internal-error",
+    "unknown-code",
+    "auth/invalid-argument",
+  ]) {
+    const { request, logs, store } = await setup(t, async () => {
+      throw Object.assign(
+        Error(
+          "Error fetching public keys: private-token sk-test-secret +15555550123 data:image/jpeg;base64,AAAA",
+        ),
+        { code },
+      );
+    });
+    const r = await request("/api/v1/me");
+    assert.equal(r.status, 503, code);
+    assert.equal((await r.json()).error.code, "AUTH_UNAVAILABLE");
+    assert.equal(store.rows.size, 0);
+    assert.ok(logs[0].errorMessage);
+    assert.doesNotMatch(
+      JSON.stringify(logs),
+      /private-token|sk-test-secret|15555550123|base64|valid-owner-token/,
+    );
+  }
+});
+test("expired, revoked, malformed and disabled-user tokens stay rejected as 401", async (t) => {
+  for (const code of [
+    "auth/id-token-expired",
+    "auth/id-token-revoked",
+    "auth/invalid-id-token",
+    "auth/user-disabled",
+    "auth/user-not-found",
+    "auth/invalid-argument",
+  ]) {
+    const { request, logs } = await setup(t, async () => {
+      throw Object.assign(Error("Decoding Firebase ID token failed."), {
+        code,
+      });
+    });
+    assert.equal((await request("/api/v1/me")).status, 401, code);
+    assert.equal(logs[0].errorCategory, code);
+  }
+});
+test("internal errors carry useful safe diagnostics, never raw exception content", async (t) => {
+  const { request, store, logs } = await setup(t);
+  store.get = async () => {
+    throw Object.assign(
+      Error(
+        "Permission denied for private invoice and token sk-test-secret +15555550123",
+      ),
+      { code: 7 },
+    );
+  };
+  const r = await request("/api/v1/sync");
+  assert.equal(r.status, 500);
+  assert.equal(logs[0].errorCategory, "permission-denied");
+  assert.match(logs[0].errorMessage, /permission/i);
+  assert.doesNotMatch(
+    JSON.stringify(logs),
+    /private invoice|sk-test-secret|15555550123/,
+  );
+  assert.doesNotMatch((await r.json()).error.message, /טיוטה/);
 });
