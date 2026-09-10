@@ -7,7 +7,8 @@ export async function validateFiles(input) {
   if (!Array.isArray(input) || !input.length || input.length > MAX_PAGES)
     fail(400, "INVALID_FILES", "יש לבחור בין קובץ אחד ל־8 קבצים.");
   let total = 0,
-    pages = 0;
+    pages = 0,
+    preparedTotal = 0;
   const files = [];
   for (const f of input) {
     object(f, ["name", "mime", "data"]);
@@ -30,7 +31,7 @@ export async function validateFiles(input) {
       !/^[A-Za-z0-9+/]*={0,2}$/.test(f.data)
     )
       fail(400, "INVALID_FILE", "קובץ לא תקין. יש לבחור אותו מחדש.");
-    const bytes = Buffer.from(f.data, "base64");
+    let bytes = Buffer.from(f.data, "base64");
     total += bytes.length;
     if (total > MAX_UPLOAD_BYTES)
       fail(
@@ -53,7 +54,7 @@ export async function validateFiles(input) {
       } else {
         const { default: sharp } = await import("sharp");
         const image = sharp(bytes, {
-          limitInputPixels: 24_000_000,
+          limitInputPixels: 80_000_000,
           failOn: "error",
           sequentialRead: true,
         });
@@ -67,8 +68,20 @@ export async function validateFiles(input) {
           !metadata.height
         )
           throw new Error();
-        // Decode to catch corrupt/truncated images. Originals remain untouched; no cropping or aggressive sharpening.
-        await image.stats();
+        // Sequential decoding, EXIF orientation and a full-page fit bound memory/output.
+        // No crop, threshold, contrast normalization or aggressive sharpening.
+        bytes = await image
+          .rotate()
+          .resize({
+            width: 2500,
+            height: 2500,
+            fit: "inside",
+            withoutEnlargement: true,
+          })
+          .flatten({ background: "#fff" })
+          .jpeg({ quality: 88, chromaSubsampling: "4:4:4" })
+          .toBuffer();
+        mime = "image/jpeg";
       }
     } catch {
       fail(
@@ -78,6 +91,13 @@ export async function validateFiles(input) {
       );
     }
     pages += count;
+    preparedTotal += bytes.length;
+    if (preparedTotal > MAX_UPLOAD_BYTES)
+      fail(
+        413,
+        "FILE_TOO_LARGE",
+        "הקבצים גדולים מ־12 מגה גם אחרי הכנה. בחר פחות עמודים.",
+      );
     if (pages > MAX_PAGES)
       fail(413, "TOO_MANY_PAGES", "ניתן לסרוק עד 8 עמודים בכל פעם.");
     files.push({
@@ -85,7 +105,10 @@ export async function validateFiles(input) {
       bytes,
       mime,
       pages: count,
-      name: f.name.replace(/[\x00-\x1f/\\]/g, "_"),
+      name: (mime === "image/jpeg"
+        ? f.name.replace(/\.[^.]+$/, "") + ".jpg"
+        : f.name
+      ).replace(/[\x00-\x1f/\\]/g, "_"),
     });
   }
   return files;

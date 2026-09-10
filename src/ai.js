@@ -46,7 +46,7 @@ export async function callLuna(files, purpose, config, fetchImpl = fetch) {
       },
       signal: AbortSignal.timeout(38_000),
       body: JSON.stringify({
-        model: "gpt-5.6-luna",
+        model: config.model,
         store: false,
         instructions: INSTRUCTIONS,
         input: [{ role: "user", content }],

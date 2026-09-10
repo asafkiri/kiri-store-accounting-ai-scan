@@ -36,6 +36,8 @@ test("invoice lifecycle, check handover date independent from due date, audit an
     uid,
   );
   assert.equal(a.record.version, 2);
+  assert.equal(a.record.notes, "עדכון");
+  assert.equal((await store.get("invoices/invoice-001")).notes, "עדכון");
   a = await service.actInvoice(
     "invoice-001",
     "pay",
