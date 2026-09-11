@@ -25,6 +25,44 @@ const body = (data, expectedVersion = 0) => ({
   expectedVersion,
   mutationId: randomUUID(),
 });
+test("unused supplier deletion is versioned, replayable and visible to other devices", async () => {
+  const { service, store } = await fixture();
+  const request = { expectedVersion: 1, mutationId: randomUUID() };
+  const deleted = await service.deleteSupplier("supplier-001", request, uid);
+  assert.ok(deleted.record.deletedAt);
+  assert.equal(deleted.record.active, false);
+  assert.equal(deleted.record.version, 2);
+  assert.equal((await service.deleteSupplier("supplier-001", request, uid)).replayed, true);
+  assert.equal((await store.get("system/dataVersion")).version, 2);
+  await assert.rejects(service.saveSupplier("supplier-001", body({ name: "בדיקה", active: true, notes: "", contact: "" }, 1), uid), e => e.code === "VERSION_CONFLICT");
+  await service.saveSupplier("supplier-new", body({ name: "בדיקה", active: true, notes: "", contact: "" }), uid);
+  assert.equal((await store.get("suppliers/supplier-new")).deletedAt, null);
+});
+test("supplier deletion preserves all invoice history and races safely with invoice creation", async () => {
+  const { service, store } = await fixture();
+  await service.saveInvoice("invoice-001", body(inv()), uid);
+  const request = { expectedVersion: 1, mutationId: randomUUID() };
+  await assert.rejects(service.deleteSupplier("supplier-001", request, uid), e => e.code === "SUPPLIER_HAS_INVOICES");
+  await service.actInvoice("invoice-001", "delete", { expectedVersion: 1, mutationId: randomUUID() }, uid);
+  await assert.rejects(service.deleteSupplier("supplier-001", request, uid), e => e.code === "SUPPLIER_HAS_INVOICES");
+  assert.equal((await store.get("suppliers/supplier-001")).deletedAt, null);
+  const fresh = await fixture();
+  const results = await Promise.allSettled([
+    fresh.service.deleteSupplier("supplier-001", { expectedVersion: 1, mutationId: randomUUID() }, uid),
+    fresh.service.saveInvoice("invoice-race", body(inv()), uid),
+  ]);
+  assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
+});
+test("new records accept invoices and credit invoices; legacy document types remain editable", async () => {
+  const { service, store } = await fixture();
+  for (const documentType of ["delivery", "receipt"]) {
+    await assert.rejects(service.saveInvoice("invoice-" + documentType, body({ ...inv(), documentType }), uid), e => e.code === "INVOICE_TYPE_REQUIRED");
+  }
+  await service.saveInvoice("legacy-invoice", body(inv()), uid);
+  await store.transaction(async tx => { tx.set("invoices/legacy-invoice", { ...await tx.get("invoices/legacy-invoice"), documentType: "delivery" }); });
+  const edited = await service.saveInvoice("legacy-invoice", body({ ...inv(), documentType: "delivery", notes: "היסטוריה" }, 1), uid);
+  assert.equal(edited.record.documentType, "delivery");
+});
 test("invoice lifecycle, check handover date independent from due date, audit and reload", async () => {
   const { service, store } = await fixture();
   let a = await service.saveInvoice("invoice-001", body(inv()), uid);

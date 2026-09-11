@@ -220,6 +220,10 @@ export function createHandler({
           send(200, result);
           return;
         }
+        if (method === "DELETE" && entity === "suppliers" && entityId) {
+          send(200, await accounting.deleteSupplier(entityId, await jsonBody(req), user.uid));
+          return;
+        }
         if (method === "DELETE" && entity === "invoices" && entityId) {
           send(
             200,
