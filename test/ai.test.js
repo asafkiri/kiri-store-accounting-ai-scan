@@ -13,6 +13,83 @@ import { DocumentService, validateFiles } from "../src/files.js";
 import { authorize } from "../src/auth.js";
 import { configFromEnv } from "../src/config.js";
 import { MemoryStore, MemoryStorage, config, aiResult } from "./helpers.js";
+
+function osemExtraction() {
+  const result = aiResult();
+  Object.assign(result, { supplierName: "אסם", subtotalAgorot: 338550, vatAgorot: 60941, totalAgorot: 399500, finalAgorot: 399500 });
+  Object.assign(result.evidence, {
+    supplierName: "אסם", subtotalAgorot: "ערך תעודה לאחר הנחות 3385.50",
+    vatAgorot: "מע״מ 609.41", totalAgorot: "סה״כ לתשלום 3995.00", finalAgorot: "סה״כ לתשלום 3995.00",
+  });
+  result.deductions = [
+    { label: "הנחה", amountAgorot: 93728, includedInTotal: true, evidence: 'ערך תעודה לפי מחירון 4322.78 / סה"כ הנחה 937.28 / ערך תעודה לאחר הנחות 3385.50' },
+    { label: "הפרש עיגול", amountAgorot: 9, includedInTotal: true, evidence: "הפרש עיגול 0.09" },
+  ];
+  return result;
+}
+test("printed Osem rounding reconciles exact agorot; document discount is already in subtotal", () => {
+  const raw = osemExtraction(), result = validateInvoiceExtraction(raw);
+  assert.deepEqual(result, raw);
+  assert.equal(result.needsReview, false);
+  assert.equal(result.deductions.filter(d => d.label === "הנחה").length, 1);
+  assert.equal(result.subtotalAgorot + result.vatAgorot + 9, result.totalAgorot);
+  assert.deepEqual(raw, osemExtraction(), "validation must not mutate the source");
+});
+test("rounding supports printed negative signs and never invents a balancing sign", () => {
+  for (const evidence of ["עיגול -0.09", "rounding −0.09", "הפרש עיגול 0.09-"]) {
+    const raw = osemExtraction();
+    raw.totalAgorot = raw.finalAgorot = 399482;
+    Object.assign(raw.deductions[1], { amountAgorot: -9, evidence });
+    assert.deepEqual(validateInvoiceExtraction(raw), raw);
+  }
+  const raw = osemExtraction();
+  raw.deductions[1].amountAgorot = -9;
+  assert.equal(validateInvoiceExtraction(raw).needsReview, true);
+});
+test("no tolerance for missing, unrelated, ambiguous, excluded or misread rounding evidence", () => {
+  const variants = [
+    d => { d.evidence = null; },
+    d => { d.evidence = "סה״כ 0.09"; },
+    d => { d.evidence = "הפרש עיגול 0.90"; },
+    d => { d.evidence = "הפרש עיגול\nסה״כ 0.09"; },
+    d => { d.evidence = "הפרש עיגול 0.09 סה״כ 3995.00"; },
+    d => { d.evidence = "הפרש עיגול -0.09"; },
+    d => { d.includedInTotal = false; },
+    d => { d.includedInTotal = null; },
+    d => { d.label = "הנחה"; },
+    d => { d.amountAgorot = null; },
+  ];
+  for (const change of variants) {
+    const raw = osemExtraction(); change(raw.deductions[1]);
+    const result = validateInvoiceExtraction(raw);
+    assert.equal(result.needsReview, true, JSON.stringify(raw.deductions[1]));
+    assert.ok(result.uncertainFields.includes("totalAgorot"));
+    assert.equal(result.totalAgorot, 399500);
+    assert.equal(result.vatAgorot, 60941);
+    assert.equal(result.subtotalAgorot, 338550);
+  }
+  const raw = osemExtraction(); raw.deductions.pop();
+  assert.equal(validateInvoiceExtraction(raw).needsReview, true);
+});
+test("multi-page Osem response passes through the request validator with the new instructions", async () => {
+  let sent;
+  const expected = osemExtraction();
+  const result = await callLuna(
+    Array.from({ length: 3 }, () => ({ mime: "image/jpeg", bytes: Buffer.from("fixture") })),
+    "invoice", config, async (_url, options) => {
+      sent = JSON.parse(options.body);
+      return { ok: true, json: async () => ({ status: "completed", output: [{ content: [{ type: "output_text", text: JSON.stringify(expected) }] }] }) };
+    },
+  );
+  assert.deepEqual(result, expected);
+  assert.equal(sent.input[0].content.filter(c => c.type === "input_image").length, 3);
+  assert.match(sent.instructions, /Ignore running customer balance lines/);
+  assert.match(sent.instructions, /יתרת לקוח ללא חשבונית זו/);
+  assert.match(sent.instructions, /AFTER-discount amount/);
+  assert.match(sent.instructions, /Do not subtract it again/);
+  assert.match(sent.instructions, /Do not fabricate a rounding line/);
+  assert.match(sent.instructions, /Overlapping photos/);
+});
 test("valid structured JSON preserved; absent VAT remains null and needsReview", () => {
   assert.deepEqual(validateInvoiceExtraction(aiResult()), aiResult());
   let a = aiResult();
