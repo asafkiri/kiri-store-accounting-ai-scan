@@ -223,7 +223,7 @@ export function validateInvoiceExtraction(raw) {
   if (signIssues.length) {
     signIssues.forEach((key) => uncertain.add(key));
     result.warnings.push(
-      "זהו זיכוי: במסמך נקראו סכומים שאינם שליליים. בדוק והזן זיכוי כמספר שלילי לפני שמירה. המספרים שנקראו לא שונו.",
+      "זהו זיכוי: במסמך נקראו סכומים שאינם שליליים. בדוק שסוג המסמך הוא זיכוי ואת גובה הסכומים. בשמירה מאושרת הזיכוי נרשם כהפחתה. המספרים שנקראו לא שונו.",
     );
   }
   result.uncertainFields = [...uncertain];

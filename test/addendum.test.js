@@ -34,10 +34,6 @@ const credit = (amount = -3000) => ({
 
 test("a credit is negative: invoice 100 plus credit 30 leaves 70 in monthly and open totals", async () => {
   const { service } = await setup();
-  await assert.rejects(
-    service.saveInvoice("credit-positive", body(credit(3000)), uid),
-    (e) => e.code === "INVALID_CREDIT_SIGN",
-  );
   await service.saveInvoice(
     "invoice-100",
     body({
@@ -49,17 +45,19 @@ test("a credit is negative: invoice 100 plus credit 30 leaves 70 in monthly and 
     }),
     uid,
   );
-  await service.saveInvoice("credit-030", body(credit()), uid);
+  const request = body(credit(3000));
+  const saved = await service.saveInvoice("credit-030", request, uid);
+  assert.equal(saved.record.finalAgorot, -3000);
+  assert.equal(request.data.finalAgorot, 3000);
+  assert.equal((await service.saveInvoice("credit-030", request, uid)).replayed, true);
   const totals = summarize(await service.all("invoices"));
   assert.equal(totals.finalAgorot, 7000);
   assert.equal(totals.totalAgorot, 7000);
   assert.equal(totals.unpaidAgorot, 7000);
 });
-test("credit sign rules reject positive known VAT/subtotal and zero totals, preserving null or explicit zero VAT", async () => {
+test("credit magnitudes normalize on reviewed save while zero totals remain invalid", async () => {
   const { service } = await setup();
   for (const values of [
-    { vatAgorot: 300 },
-    { subtotalAgorot: 3000 },
     { finalAgorot: 0 },
     { totalAgorot: 0 },
   ]) {
@@ -78,6 +76,9 @@ test("credit sign rules reject positive known VAT/subtotal and zero totals, pres
     uid,
   );
   assert.equal(saved.record.vatAgorot, 0);
+  const positive = await service.saveInvoice("credit-magnitude", body({ ...credit(3540), documentNumber: "MAG-1", subtotalAgorot: 3000, vatAgorot: 540 }), uid);
+  assert.equal(positive.record.subtotalAgorot, -3000);
+  assert.equal(positive.record.vatAgorot, -540);
 });
 test("AI keeps positive numbers printed on a credit and explicitly flags sign review", () => {
   const raw = { ...aiResult(), documentType: "credit" };
@@ -86,7 +87,7 @@ test("AI keeps positive numbers printed on a credit and explicitly flags sign re
   assert.equal(result.vatAgorot, raw.vatAgorot);
   assert.equal(result.needsReview, true);
   assert.ok(result.uncertainFields.includes("finalAgorot"));
-  assert.match(result.warnings.join(" "), /זיכוי.*שלילי/);
+  assert.match(result.warnings.join(" "), /זיכוי.*כהפחתה/);
 });
 test("legacy positive credits are flagged instead of reporting a misleading aggregate", () => {
   const totals = summarize([

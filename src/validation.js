@@ -162,11 +162,17 @@ export function payment(v) {
   return result;
 }
 export function creditAmounts(invoice) {
+  // Run only after the idempotency receipt check. Old pending requests keep
+  // their exact fingerprints; only a new, reviewed write adopts this convention.
+  if (invoice.documentType === "credit") {
+    for (const key of ["subtotalAgorot", "vatAgorot", "totalAgorot", "finalAgorot"])
+      if (invoice[key] !== null) invoice[key] = -Math.abs(invoice[key]) || 0;
+  }
   if (creditSignIssues(invoice).length)
     fail(
       400,
       "INVALID_CREDIT_SIGN",
-      "הזן את סכום הזיכוי כמספר שלילי. גם סכומי לפני מע״מ ומע״מ, כשידועים, יהיו שליליים או אפס.",
+      "סכום הזיכוי והסכום הסופי חייבים להיות גדולים מאפס. הזיכוי נרשם כהפחתה לפי סוג המסמך.",
     );
 }
 export function cash(v) {

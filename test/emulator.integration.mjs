@@ -1,3 +1,4 @@
+import { getFirestore, Timestamp } from "firebase-admin/firestore";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -100,6 +101,8 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     200,
     await supplierResponse.clone().text(),
   );
+  const rawRoot = getFirestore().collection("stores").doc("family");
+  const raw = async key => (await rawRoot.collection(key.split("/")[0]).doc(key.split("/")[1]).get()).data();
   const supplier = (await supplierResponse.json()).record;
   assert.equal(typeof supplier.createdAt, "number");
   const body = { expectedVersion: 0, mutationId: randomUUID(), data: inv() };
@@ -182,6 +185,35 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   assert.equal(scan.status, 200, await scan.clone().text());
   const scanResult = await scan.json();
   assert.equal(scanResult.result.vatAgorot, 1800);
+  // Native Firestore types must survive update spreads, audit snapshots and scan replay.
+  const paidRaw = await raw("invoices/invoice-001");
+  assert.ok(paidRaw.createdAt instanceof Timestamp);
+  assert.ok(paidRaw.payment.recordedAt instanceof Timestamp);
+  const updateId = randomUUID();
+  const updated = await api("invoices/invoice-001", { expectedVersion: 2, mutationId: updateId, data: { ...inv(), notes: "updated" } });
+  assert.equal(updated.status, 200, await updated.clone().text());
+  const updatedRaw = await raw("invoices/invoice-001");
+  assert.ok(updatedRaw.createdAt.isEqual(paidRaw.createdAt));
+  assert.ok(updatedRaw.payment.recordedAt.isEqual(paidRaw.payment.recordedAt));
+  const audit = await raw("mutations/" + updateId);
+  assert.ok(audit.before.createdAt instanceof Timestamp);
+  assert.ok(audit.before.payment.recordedAt instanceof Timestamp);
+  const deleted = await api("invoices/invoice-001", { expectedVersion: 3, mutationId: randomUUID() }, "DELETE");
+  assert.equal(deleted.status, 200, await deleted.clone().text());
+  const deletedRaw = await raw("invoices/invoice-001");
+  assert.ok(deletedRaw.deletedAt instanceof Timestamp);
+  const restoreId = randomUUID();
+  const restored = await api("invoices/invoice-001/restore", { expectedVersion: 4, mutationId: restoreId }, "POST");
+  assert.equal(restored.status, 200, await restored.clone().text());
+  assert.ok((await raw("mutations/" + restoreId)).before.deletedAt instanceof Timestamp);
+  const scanRaw = await raw("scanJobs/" + scanResult.id);
+  assert.ok(scanRaw.createdAt instanceof Timestamp);
+  assert.ok(scanRaw.completedAt instanceof Timestamp);
+  const replay = await api("scan-invoice", { jobId: scanResult.id, attachmentIds: [doc.id] }, "POST");
+  assert.equal(replay.status, 200);
+  const replayed = await replay.json();
+  assert.equal(typeof replayed.createdAt, "number");
+  assert.equal(replayed.createdAt, scanResult.createdAt);
   const snapshot = await (await api("sync")).json();
   assert.equal(snapshot.invoices.length, 1);
   assert.equal(snapshot.dailyCash[0].ravKavAgorot, 6789);
