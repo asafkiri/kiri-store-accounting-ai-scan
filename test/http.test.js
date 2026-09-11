@@ -313,3 +313,20 @@ test("supplier DELETE requires authorization, returns its tombstone and propagat
   assert.equal(sync.suppliers[0].active, false);
   assert.ok(sync.suppliers[0].deletedAt);
 });
+
+test("supplier restoration and VAT settings use authorized versioned endpoints and incremental sync", async t => {
+  const { request } = await setup(t);
+  const supplierPath = "/api/v1/suppliers/supplier-restore";
+  await request(supplierPath, { method: "PUT", body: JSON.stringify({ expectedVersion: 0, mutationId: randomUUID(), data: { name: "ספק לשחזור", active: true, notes: "", contact: "" } }) });
+  await request(supplierPath, { method: "DELETE", body: JSON.stringify({ expectedVersion: 1, mutationId: randomUUID() }) });
+  const restore = { method: "POST", body: JSON.stringify({ expectedVersion: 2, mutationId: randomUUID() }) };
+  assert.equal((await request(supplierPath + "/restore", { ...restore, headers: { Authorization: "" } })).status, 401);
+  assert.equal((await request(supplierPath + "/restore", restore)).status, 200);
+  const settings = { method: "PUT", body: JSON.stringify({ expectedVersion: 0, mutationId: randomUUID(), data: { defaultVatBasisPoints: 1700 } }) };
+  assert.equal((await request("/api/v1/settings/accounting", { ...settings, headers: { Authorization: "Bearer valid-other-token" } })).status, 403);
+  assert.equal((await request("/api/v1/settings/accounting", settings)).status, 200);
+  const sync = await (await request("/api/v1/sync?since=2")).json();
+  assert.equal(sync.suppliers[0].deletedAt, null);
+  assert.equal(sync.settings[0].defaultVatBasisPoints, 1700);
+  assert.equal((await (await request("/api/v1/sync")).json()).settings[0].defaultVatBasisPoints, 1700);
+});

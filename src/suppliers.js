@@ -16,7 +16,7 @@ export function supplierConflict(supplier, code = "SUPPLIER_EXISTS") {
 export async function checkSupplierName(tx, next, previous) {
   if (
     next.deletedAt ||
-    (previous &&
+    (previous && !previous.deletedAt &&
       previous.name === next.name &&
       (previous.active || !next.active))
   )
@@ -74,7 +74,7 @@ export async function prepareInvoiceSupplier(
   }
   if (
     !supplier ||
-    supplier.deletedAt ||
+    (supplier.deletedAt && previous?.supplierId !== invoice.supplierId) ||
     (!supplier.active && previous?.supplierId !== invoice.supplierId)
   )
     fail(400, "SUPPLIER_MISSING", "יש לבחור ספק פעיל.");
