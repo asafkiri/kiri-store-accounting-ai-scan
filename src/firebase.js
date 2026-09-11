@@ -41,11 +41,11 @@ export function firebaseServices(config) {
           fn({
             get: async (key) => {
               const s = await native.get(ref(key));
-              return s.exists ? normalize(s.data()) : null;
+              return s.exists ? s.data() : null;
             },
             list: async (collection) =>
               (await native.get(root.collection(collection))).docs.map((d) =>
-                normalize(d.data()),
+                d.data(),
               ),
             set: (key, data) => native.set(ref(key), data),
             stamp: () => FieldValue.serverTimestamp(),

@@ -195,7 +195,7 @@ export class ScanService {
       });
       return null;
     });
-    if (existing) return existing;
+    if (existing) return this.store.get(jobKey);
     let result, error;
     try {
       result = await this.invoke(files, body.purpose, this.config);

@@ -286,10 +286,14 @@ test("actual Admin SDK malformed-token errors are rejected as 401 without contac
   const { request, logs } = await setup(t, (token) =>
     getAuth(app).verifyIdToken(token, true),
   );
-  const response = await request("/api/v1/me", {
-    headers: { Authorization: "Bearer invalid-test-token" },
-  });
-  assert.equal(response.status, 401);
-  assert.equal((await response.json()).error.code, "INVALID_TOKEN");
-  assert.equal(logs[0].errorCategory, "auth/argument-error");
+  const jwt = [
+    { alg: "RS256", typ: "JWT" },
+    { aud: "demo-kiri-accounting", iss: "https://securetoken.google.com/demo-kiri-accounting", sub: "fixture" },
+  ].map(value => Buffer.from(JSON.stringify(value)).toString("base64url")).join(".") + ".signature";
+  for (const token of ["invalid-test-token", jwt]) {
+    const response = await request("/api/v1/me", { headers: { Authorization: "Bearer " + token } });
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).error.code, "INVALID_TOKEN");
+    assert.equal(logs.at(-1).errorCategory, "auth/argument-error");
+  }
 });
