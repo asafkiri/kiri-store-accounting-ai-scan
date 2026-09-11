@@ -297,3 +297,19 @@ test("actual Admin SDK malformed-token errors are rejected as 401 without contac
     assert.equal(logs.at(-1).errorCategory, "auth/argument-error");
   }
 });
+
+test("supplier DELETE requires authorization, returns its tombstone and propagates through sync", async t => {
+  const { request } = await setup(t);
+  const path = "/api/v1/suppliers/supplier-delete";
+  await request(path, { method: "PUT", body: JSON.stringify({ expectedVersion: 0, mutationId: randomUUID(), data: { name: "ספק זמני", active: true, notes: "", contact: "" } }) });
+  const options = { method: "DELETE", body: JSON.stringify({ expectedVersion: 1, mutationId: randomUUID() }) };
+  assert.equal((await request(path, { ...options, headers: { Authorization: "" } })).status, 401);
+  assert.equal((await request(path, { ...options, headers: { Authorization: "Bearer valid-other-token" } })).status, 403);
+  const response = await request(path, options);
+  assert.equal(response.status, 200);
+  assert.ok((await response.json()).record.deletedAt);
+  const sync = await (await request("/api/v1/sync?since=1")).json();
+  assert.equal(sync.suppliers.length, 1);
+  assert.equal(sync.suppliers[0].active, false);
+  assert.ok(sync.suppliers[0].deletedAt);
+});

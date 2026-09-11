@@ -113,10 +113,20 @@ export class AccountingService {
       if (action === "delete") next.deletedAt = tx.stamp();
       if (action === "restore") next.deletedAt = null;
       let supplierChange = null;
-      if (collection === "suppliers")
+      if (collection === "suppliers") {
+        // Read within the same dataVersion transaction as invoice creation.
+        // Even deleted invoices keep their supplier so history can be restored.
+        if (action === "delete") {
+          if ((await tx.list("invoices")).some(i => i.supplierId === id))
+            fail(409, "SUPPLIER_HAS_INVOICES", "לספק הזה יש היסטוריית חשבוניות. אפשר לסמן אותו כלא פעיל, אך לא למחוק אותו.");
+          next.active = false;
+        }
         await checkSupplierName(tx, next, previous);
+      }
       if (collection === "invoices") {
         if (action === "save") {
+          if (!["invoice", "credit"].includes(next.documentType) && previous?.documentType !== next.documentType)
+            fail(400, "INVOICE_TYPE_REQUIRED", "כאן שומרים חשבוניות וחשבוניות זיכוי בלבד. אין לשמור תעודת משלוח או קבלה כחשבונית.");
           // Check after the receipt so retries of previously committed data still replay.
           v.creditAmounts(next);
           supplierChange = await prepareInvoiceSupplier(
@@ -243,6 +253,11 @@ export class AccountingService {
       uid,
       data: v.supplier(body.data),
     });
+  }
+  async deleteSupplier(id, body, uid) {
+    v.object(body, ["expectedVersion", "mutationId"]);
+    return this.mutate({ collection: "suppliers", id, expectedVersion: body.expectedVersion,
+      mutationId: body.mutationId, uid, action: "delete" });
   }
   async cancelMutation(mutationId, body, uid) {
     v.id(mutationId);
