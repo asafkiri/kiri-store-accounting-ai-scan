@@ -18,8 +18,9 @@ const claimKey = (i) =>
     i.documentNumber.normalize("NFKC").replace(/\s/g, "").toLowerCase(),
   ]);
 export class AccountingService {
-  constructor(store) {
+  constructor(store, now = () => Date.now()) {
     this.store = store;
+    this.now = now;
   }
   async all(collection) {
     const out = [];
@@ -114,12 +115,22 @@ export class AccountingService {
       if (action === "restore") next.deletedAt = null;
       let supplierChange = null;
       if (collection === "suppliers") {
-        // Read within the same dataVersion transaction as invoice creation.
-        // Even deleted invoices keep their supplier so history can be restored.
         if (action === "delete") {
-          if ((await tx.list("invoices")).some(i => i.supplierId === id))
-            fail(409, "SUPPLIER_HAS_INVOICES", "לספק הזה יש היסטוריית חשבוניות. אפשר לסמן אותו כלא פעיל, אך לא למחוק אותו.");
+          // Removing a supplier never removes invoices or their documents.
+          // The tombstone keeps the historical name and the sync identity.
+          next.activeBeforeDeletion = previous.active;
+          next.restoreUntil = this.now() + 30 * 24 * 60 * 60 * 1000;
           next.active = false;
+        }
+        if (action === "restore") {
+          const deletedAt = previous.deletedAt?.toMillis?.() ?? previous.deletedAt;
+          if (!deletedAt) fail(409, "NOT_DELETED", "הספק כבר נמצא ברשימת הספקים.");
+          const deadline = previous.restoreUntil ?? (deletedAt + 30 * 24 * 60 * 60 * 1000);
+          if (this.now() >= deadline)
+            fail(410, "RESTORE_EXPIRED", "חלפו 30 ימים ממחיקת הספק ולא ניתן לשחזר אותו.");
+          next.active = previous.activeBeforeDeletion ?? true;
+          next.restoreUntil = null;
+          next.activeBeforeDeletion = null;
         }
         await checkSupplierName(tx, next, previous);
       }
@@ -259,13 +270,27 @@ export class AccountingService {
     return this.mutate({ collection: "suppliers", id, expectedVersion: body.expectedVersion,
       mutationId: body.mutationId, uid, action: "delete" });
   }
+  async restoreSupplier(id, body, uid) {
+    v.object(body, ["expectedVersion", "mutationId"]);
+    return this.mutate({ collection: "suppliers", id, expectedVersion: body.expectedVersion,
+      mutationId: body.mutationId, uid, action: "restore" });
+  }
+  async saveSettings(body, uid) {
+    v.object(body, ["expectedVersion", "mutationId", "data"]);
+    v.object(body.data, ["defaultVatBasisPoints"]);
+    const rate = body.data.defaultVatBasisPoints;
+    if (!Number.isInteger(rate) || rate < 0 || rate > 10000)
+      fail(400, "INVALID_INPUT", "יש לבחור שיעור מע״מ בין 0 ל־100 אחוזים.");
+    return this.mutate({ collection: "settings", id: "accounting", expectedVersion: body.expectedVersion,
+      mutationId: body.mutationId, uid, data: { defaultVatBasisPoints: rate } });
+  }
   async cancelMutation(mutationId, body, uid) {
     v.id(mutationId);
     v.object(body, ["entity"]);
     const match =
       typeof body.entity === "string" &&
       body.entity.match(
-        /^(suppliers|invoices|daily-cash)\/([a-zA-Z0-9_-]{8,100})$/,
+        /^(suppliers|invoices|daily-cash|settings)\/([a-zA-Z0-9_-]{8,100})$/,
       );
     if (!match) fail(400, "INVALID_INPUT", "בקשת הביטול אינה תקינה.");
     const key =

@@ -137,8 +137,8 @@ export function createHandler({
         }
         // Initial snapshot is read after recording the cursor; later refreshes cannot skip concurrent changes.
         if (since === 0 || since > current || current - since > 200) {
-          const [suppliers, invoices, dailyCash] = await Promise.all(
-            ["suppliers", "invoices", "dailyCash"].map((c) =>
+          const [suppliers, invoices, dailyCash, settings] = await Promise.all(
+            ["suppliers", "invoices", "dailyCash", "settings"].map((c) =>
               accounting.all(c),
             ),
           );
@@ -148,6 +148,7 @@ export function createHandler({
             suppliers,
             invoices,
             dailyCash,
+            settings,
           });
           return;
         }
@@ -161,7 +162,7 @@ export function createHandler({
             changes.filter((c) => c.version <= current).map((c) => c.entity),
           ),
         ];
-        const data = { suppliers: [], invoices: [], dailyCash: [] };
+        const data = { suppliers: [], invoices: [], dailyCash: [], settings: [] };
         await Promise.all(
           unique.map(async (key) => {
             const record = await store.get(key);
@@ -169,6 +170,19 @@ export function createHandler({
           }),
         );
         send(200, { version: current, full: false, ...data });
+        return;
+      }
+      if (path === "settings/accounting" && method === "PUT") {
+        send(200, await accounting.saveSettings(await jsonBody(req), user.uid));
+        return;
+      }
+      if (path === "settings/accounting" && method === "GET") {
+        send(200, await store.get("settings/accounting") || { id: "accounting", version: 0, defaultVatBasisPoints: 1800 });
+        return;
+      }
+      const supplierRestore = path.match(/^suppliers\/([a-zA-Z0-9_-]+)\/restore$/);
+      if (supplierRestore && method === "POST") {
+        send(200, await accounting.restoreSupplier(supplierRestore[1], await jsonBody(req), user.uid));
         return;
       }
       const entityMatch = path.match(

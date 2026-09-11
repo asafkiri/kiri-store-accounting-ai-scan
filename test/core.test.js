@@ -38,20 +38,43 @@ test("unused supplier deletion is versioned, replayable and visible to other dev
   await service.saveSupplier("supplier-new", body({ name: "בדיקה", active: true, notes: "", contact: "" }), uid);
   assert.equal((await store.get("suppliers/supplier-new")).deletedAt, null);
 });
-test("supplier deletion preserves all invoice history and races safely with invoice creation", async () => {
+test("supplier recycle bin preserves invoices, restores prior state and enforces the server deadline", async () => {
   const { service, store } = await fixture();
+  let now = Date.now(); service.now = () => now;
   await service.saveInvoice("invoice-001", body(inv()), uid);
-  const request = { expectedVersion: 1, mutationId: randomUUID() };
-  await assert.rejects(service.deleteSupplier("supplier-001", request, uid), e => e.code === "SUPPLIER_HAS_INVOICES");
-  await service.actInvoice("invoice-001", "delete", { expectedVersion: 1, mutationId: randomUUID() }, uid);
-  await assert.rejects(service.deleteSupplier("supplier-001", request, uid), e => e.code === "SUPPLIER_HAS_INVOICES");
-  assert.equal((await store.get("suppliers/supplier-001")).deletedAt, null);
-  const fresh = await fixture();
-  const results = await Promise.allSettled([
-    fresh.service.deleteSupplier("supplier-001", { expectedVersion: 1, mutationId: randomUUID() }, uid),
-    fresh.service.saveInvoice("invoice-race", body(inv()), uid),
-  ]);
-  assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
+  const original = await store.get("invoices/invoice-001");
+  const removed = await service.deleteSupplier("supplier-001", { expectedVersion: 1, mutationId: randomUUID() }, uid);
+  assert.equal(removed.record.restoreUntil, now + 30 * 86400000);
+  assert.deepEqual(await store.get("invoices/invoice-001"), original);
+  await assert.rejects(service.saveInvoice("invoice-new", body({ ...inv(), documentNumber: "new" }), uid), e => e.code === "SUPPLIER_MISSING");
+  await service.saveInvoice("invoice-001", body({ ...inv(), notes: "היסטוריה נשמרת" }, 1), uid);
+  const restoreRequest = { expectedVersion: 2, mutationId: randomUUID() };
+  now += 29 * 86400000;
+  const restored = await service.restoreSupplier("supplier-001", restoreRequest, uid);
+  assert.equal(restored.record.deletedAt, null);
+  assert.equal(restored.record.active, true);
+  assert.equal((await service.restoreSupplier("supplier-001", restoreRequest, uid)).replayed, true);
+  await service.deleteSupplier("supplier-001", { expectedVersion: 3, mutationId: randomUUID() }, uid);
+  now += 30 * 86400000;
+  await assert.rejects(service.restoreSupplier("supplier-001", { expectedVersion: 4, mutationId: randomUUID() }, uid), e => e.code === "RESTORE_EXPIRED");
+  assert.ok((await store.get("suppliers/supplier-001")).deletedAt);
+});
+test("restoring a supplier cannot create duplicate names or overwrite another device", async () => {
+  const { service } = await fixture();
+  await service.deleteSupplier("supplier-001", { expectedVersion: 1, mutationId: randomUUID() }, uid);
+  await service.saveSupplier("supplier-new", body({ name: "בדיקה", notes: "", contact: "", active: true }), uid);
+  await assert.rejects(service.restoreSupplier("supplier-001", { expectedVersion: 2, mutationId: randomUUID() }, uid), e => e.code === "SUPPLIER_EXISTS");
+  await assert.rejects(service.restoreSupplier("supplier-001", { expectedVersion: 1, mutationId: randomUUID() }, uid), e => e.code === "VERSION_CONFLICT");
+});
+test("VAT preference is shared, versioned and retryable with input validation", async () => {
+  const { service, store } = await fixture();
+  const request = body({ defaultVatBasisPoints: 1750 });
+  const saved = await service.saveSettings(request, uid);
+  assert.equal(saved.record.defaultVatBasisPoints, 1750);
+  assert.equal((await service.saveSettings(request, uid)).replayed, true);
+  assert.equal((await store.get("system/dataVersion")).version, 2);
+  for (const rate of [-1, 10001, 18.1, "18"])
+    await assert.rejects(service.saveSettings(body({ defaultVatBasisPoints: rate }, 1), uid), e => e.code === "INVALID_INPUT");
 });
 test("new records accept invoices and credit invoices; legacy document types remain editable", async () => {
   const { service, store } = await fixture();
