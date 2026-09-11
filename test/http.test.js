@@ -106,6 +106,51 @@ test("CORS exact origin, consistent errors, no credentials in logs", async (t) =
   assert.ok(!JSON.stringify(logs).includes("valid-owner-token"));
   assert.ok(!JSON.stringify(logs).includes(config.allowedPhone));
 });
+
+test("cancellation HTTP endpoint requires the authorized user and fences only the requested mutation", async (t) => {
+  const { request, store, logs } = await setup(t);
+  const mutationId = randomUUID(),
+    path = "/api/v1/mutations/" + mutationId + "/cancel";
+  const options = {
+    method: "POST",
+    body: JSON.stringify({ entity: "suppliers/supplier-cancel" }),
+  };
+  for (const [Authorization, status] of [
+    ["", 401],
+    ["Bearer invalid-test-token", 401],
+    ["Bearer valid-other-token", 403],
+  ]) {
+    assert.equal(
+      (await request(path, { ...options, headers: { Authorization } })).status,
+      status,
+    );
+  }
+  assert.equal(store.rows.size, 0);
+  const cancelled = await request(path, options);
+  assert.equal(cancelled.status, 200);
+  assert.deepEqual(await cancelled.json(), { status: "cancelled" });
+  assert.match(cancelled.headers.get("cache-control"), /no-store/);
+  const save = await request("/api/v1/suppliers/supplier-cancel", {
+    method: "PUT",
+    body: JSON.stringify({
+      expectedVersion: 0,
+      mutationId,
+      data: { name: "ספק בדיקה", active: true, contact: "", notes: "" },
+    }),
+  });
+  assert.equal(save.status, 409);
+  assert.equal((await save.json()).error.code, "MUTATION_CANCELLED");
+  assert.equal(await store.get("suppliers/supplier-cancel"), null);
+  const invalid = await request(
+    "/api/v1/mutations/" + randomUUID() + "/cancel",
+    { method: "POST", body: JSON.stringify({ entity: "system/dataVersion" }) },
+  );
+  assert.equal(invalid.status, 400);
+  assert.doesNotMatch(
+    JSON.stringify(logs),
+    /valid-owner-token|supplier-cancel|mutationId/,
+  );
+});
 test("HTTP core and incremental sync; saving same request twice creates once", async (t) => {
   const { request } = await setup(t);
   const call = async (path, data) => {

@@ -88,7 +88,7 @@ gcloud run services describe kiri-store-accounting-ai-scan \
 | `dailyCash` | ID שהוא תאריך; cashAgorot ו־ravKavAgorot נפרדים, null שונה מאפס |
 | `documents` | שם/סוג/גודל/עמודים; ה־ID הוא SHA-256 של הקובץ |
 | `scanJobs` | fingerprint, מצב, תוצאה מובנית, מסמכים, פקיעה ומטא־נתונים |
-| `mutations` | receipt למניעת שכפול, fingerprint, פעולה ועותק קודם לצורכי audit |
+| `mutations` | receipt לשמירה עם fingerprint/audit, או receipt עם `state: cancelled` שחוסם ניסיון שטרם נשמר |
 | `invoiceKeys` | מפתח ספק+סוג+מספר למניעת חשבוניות כפולות |
 | `changes` | יומן גרסאות לסנכרון מצטבר |
 | `system` | גרסת נתונים, נעילת סריקה ומוני שימוש |
@@ -96,6 +96,12 @@ gcloud run services describe kiri-store-accounting-ai-scan \
 אין יתרת ספק נפרדת. הסכום הפתוח מחושב מחשבוניות פעילות שלא שולמו. `payment.paymentDate` הוא יום התשלום/מסירת הצ׳ק. `payment.checkDueDate` שדה עצמאי. עריכת חשבונית אינה מאפסת תשלום.
 
 לכל write נדרשים `expectedVersion` ו־`mutationId`. העסקה קוראת את הגרסה, מפתח הכפילות ו־receipt לפני כל כתיבה. retry עם אותו payload ואותו ID מחזיר את הרשומה בלי write כפול; שינוי payload באותו ID או גרסה ישנה מחזיר 409. receipts ו־audit נשמרים ללא מחיקה אוטומטית ב־V1.
+
+### זיכויים וביטול ניסיון שמירה
+
+לזיכוי נשמר סימן שלילי: `totalAgorot` ו־`finalAgorot` חייבים להיות קטנים מאפס, ו־`subtotalAgorot`/`vatAgorot` שאינם null אינם יכולים להיות חיוביים. אחרת השמירה נדחית עם `400 INVALID_CREDIT_SIGN`. שדה חסר אינו הופך לאפס. `src/credit.js` משותף עם האפליקציה ונבדק בזהות בתים ב־CI שלה. חילוץ AI אינו משנה את סימן המספרים המודפסים: זיכוי בעל סימן חיובי נשאר כפי שנקרא, עם `needsReview` ושדות מסומנים לתיקון ואישור. אין הסבה שקטה של זיכויים קיימים. בסיכום המכיל זיכויים עם סימן שגוי מוחזרים `invalidCredits` ומצטברים null; `unpaidAgorot` הוא null רק אם זיכוי שגוי נמצא בין המסמכים הפתוחים. CSV/JSON נשארים נאמנים לנתונים השמורים. בדיקת הסימן מתבצעת אחרי בדיקת receipt, כדי שניסיון חוזר של שמירה ישנה שכבר אושרה ימשיך לקבל replay.
+
+`POST /api/v1/mutations/:mutationId/cancel` מקבל `{entity: "invoices/<id>"}`; גם `suppliers/<id>` ו־`daily-cash/YYYY-MM-DD` נתמכים. האימות וההרשאה הם אותם token ו־allowlist כמו יתר ה־API. הטרנזקציה קוראת את אותו receipt כמו השמירה המקורית: אם עדיין אינו קיים, היא שומרת `state: "cancelled"` ומחזירה `{status: "cancelled"}`. שמירה שמגיעה באיחור עם אותו mutationId נדחית ב־`409 MUTATION_CANCELLED`, גם אם שתי הבקשות החלו במקביל. אפשר לשמור עריכה חדשה עם mutationId חדש רק אחרי אישור הביטול. אם השמירה כבר הושלמה, הביטול מחזיר `{status: "committed", path, record, relatedRecords}`; אין ביטול של הנתונים עצמם, מחיקה או העלאת גרסה. נתיב אחר עבור אותו מזהה נדחה ב־409. הפעולה חוזרת בבטחה; receipt הביטול נשמר ללא פקיעה ואינו מייצר אירוע סנכרון עסקי. אין שימוש בנקודת קצה זו לביטול או הפעלה חוזרת של AI.
 
 ### ספק מתוך חשבונית
 
@@ -124,6 +130,7 @@ gcloud run services describe kiri-store-accounting-ai-scan \
 | GET | `/api/v1/suppliers`, `/invoices`, `/daily-cash` | עמוד עד 250 רשומות; `after`, `limit` |
 | GET | אותם נתיבים עם `/:id` | רשומה אחת |
 | PUT | אותם נתיבים עם `/:id` | `{expectedVersion,mutationId,data}` |
+| POST | `/api/v1/mutations/:id/cancel` | `{entity}` → cancelled או committed עם הרשומות; הכרעת ניסיון שמירה ללא מחיקת נתונים |
 | POST | `/api/v1/invoices/:id/pay` | `{expectedVersion,mutationId,payment}` |
 | POST | `/api/v1/invoices/:id/unpay` | החזרה ללא שולם, עם גרסה ומזהה פעולה |
 | DELETE | `/api/v1/invoices/:id` | soft-delete; JSON עם גרסה ומזהה פעולה |

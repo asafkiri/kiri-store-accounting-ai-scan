@@ -1,5 +1,6 @@
 import { isRecord, date, MAX_MONEY } from "./validation.js";
 import { fail } from "./errors.js";
+import { creditSignIssues } from "./credit.js";
 const nullableString = { type: ["string", "null"] };
 const fields = [
   "supplierName",
@@ -197,6 +198,13 @@ export function validateInvoiceExtraction(raw) {
     );
     ["subtotalAgorot", "vatAgorot", "totalAgorot"].forEach((k) =>
       uncertain.add(k),
+    );
+  }
+  const signIssues = creditSignIssues(result);
+  if (signIssues.length) {
+    signIssues.forEach((key) => uncertain.add(key));
+    result.warnings.push(
+      "זהו זיכוי: במסמך נקראו סכומים שאינם שליליים. בדוק והזן זיכוי כמספר שלילי לפני שמירה. המספרים שנקראו לא שונו.",
     );
   }
   result.uncertainFields = [...uncertain];

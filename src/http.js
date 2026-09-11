@@ -68,6 +68,7 @@ export function createHandler({
           "/reconcile",
           "/scan-jobs",
           "/backup",
+          "/mutations",
         ].includes(segment)
           ? segment
           : "/:id",
@@ -109,6 +110,18 @@ export function createHandler({
         method = req.method;
       if (path === "me" && method === "GET") {
         send(200, { uid: user.uid, authorized: true });
+        return;
+      }
+      const cancel = path.match(/^mutations\/([a-zA-Z0-9_-]+)\/cancel$/);
+      if (cancel && method === "POST") {
+        send(
+          200,
+          await accounting.cancelMutation(
+            cancel[1],
+            await jsonBody(req),
+            user.uid,
+          ),
+        );
         return;
       }
       if (path === "sync" && method === "GET") {

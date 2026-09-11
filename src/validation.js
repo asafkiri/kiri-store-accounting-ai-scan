@@ -1,4 +1,5 @@
 import { fail } from "./errors.js";
+import { creditSignIssues } from "./credit.js";
 export const MAX_MONEY = 100_000_000_000;
 export const isRecord = (v) =>
   v !== null && typeof v === "object" && !Array.isArray(v);
@@ -160,6 +161,14 @@ export function payment(v) {
     fail(400, "INVALID_INPUT", "פרטי צ׳ק זמינים רק לתשלום בצ׳ק.");
   return result;
 }
+export function creditAmounts(invoice) {
+  if (creditSignIssues(invoice).length)
+    fail(
+      400,
+      "INVALID_CREDIT_SIGN",
+      "הזן את סכום הזיכוי כמספר שלילי. גם סכומי לפני מע״מ ומע״מ, כשידועים, יהיו שליליים או אפס.",
+    );
+}
 export function cash(v) {
   object(v, ["date", "cashAgorot", "ravKavAgorot", "notes"]);
   const result = {
@@ -228,17 +237,26 @@ export function filterInvoices(items, f, suppliers = []) {
   );
 }
 export function summarize(invoices) {
-  const sum = (k) => invoices.reduce((a, i) => a + (i[k] ?? 0), 0);
+  const invalidCredits = invoices.filter(
+    (i) => creditSignIssues(i).length,
+  ).length;
+  const sum = (k) =>
+    invalidCredits ? null : invoices.reduce((a, i) => a + (i[k] ?? 0), 0);
   return {
     count: invoices.length,
+    invalidCredits,
     subtotalAgorot: sum("subtotalAgorot"),
     vatAgorot: sum("vatAgorot"),
     totalAgorot: sum("totalAgorot"),
     finalAgorot: sum("finalAgorot"),
     unknownVat: invoices.filter((i) => i.vatAgorot === null).length,
     unknownSubtotal: invoices.filter((i) => i.subtotalAgorot === null).length,
-    unpaidAgorot: invoices
-      .filter((i) => i.status === "unpaid")
-      .reduce((a, i) => a + i.finalAgorot, 0),
+    unpaidAgorot: invoices.some(
+      (i) => i.status === "unpaid" && creditSignIssues(i).length,
+    )
+      ? null
+      : invoices
+          .filter((i) => i.status === "unpaid")
+          .reduce((a, i) => a + i.finalAgorot, 0),
   };
 }
