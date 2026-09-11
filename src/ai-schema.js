@@ -144,6 +144,20 @@ export function hasExplicitZeroVat(evidence = "") {
   );
   return exempt.test(evidence) || zero.test(evidence);
 }
+const roundingLabel = /(?:עיגול|\brounding\b)/iu;
+// A rounding allowance must come from its own printed line and exact signed
+// amount. A label alone, an unrelated excerpt, or a balancing guess is not proof.
+function hasPrintedRounding(deduction) {
+  if (!roundingLabel.test(deduction.label || "") || deduction.amountAgorot === null) return false;
+  return (deduction.evidence || "").split(/\r?\n/).some(line => {
+    if (!roundingLabel.test(line)) return false;
+    const amounts = [...line.matchAll(/(?<![\d.,])([+\-−]?)(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?([\-−]?)(?![\d.,%])/gu)];
+    if (amounts.length !== 1) return false;
+    const [, sign, whole, fraction = "", suffix] = amounts[0];
+    const agorot = Number(whole.replaceAll(",", "")) * 100 + Number(fraction.padEnd(2, "0"));
+    return (sign === "-" || sign === "−" || suffix ? -agorot : agorot) === deduction.amountAgorot;
+  });
+}
 export function validateInvoiceExtraction(raw) {
   if (!matchesSchema(raw, invoiceJsonSchema))
     fail(
@@ -182,16 +196,21 @@ export function validateInvoiceExtraction(raw) {
       "AI_INVALID_RESPONSE",
       "יש יותר מדי שורות הפחתה. יש לבדוק ידנית.",
     );
+  let printedRoundingAgorot = 0;
   for (const d of result.deductions) {
     if (!d.evidence?.trim()) d.amountAgorot = null;
     if (d.amountAgorot === null || d.includedInTotal === null || !d.label)
       result.needsReview = true;
+    if (roundingLabel.test(d.label || "") && d.includedInTotal === true) {
+      if (hasPrintedRounding(d)) printedRoundingAgorot += d.amountAgorot;
+      else result.needsReview = true;
+    }
   }
   if (
     [result.subtotalAgorot, result.vatAgorot, result.totalAgorot].every(
       (v) => v !== null,
     ) &&
-    result.subtotalAgorot + result.vatAgorot !== result.totalAgorot
+    result.subtotalAgorot + result.vatAgorot + printedRoundingAgorot !== result.totalAgorot
   ) {
     result.warnings.push(
       "הסכום לפני מע״מ ועוד המע״מ אינו שווה לסכום הכולל. המספרים שנקראו לא שונו.",
