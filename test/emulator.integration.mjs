@@ -237,6 +237,40 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     afterRace.invoices.filter((s) => s.id.startsWith("invoice-race-")).length,
     1,
   );
+  // Both requests read/write the same Firestore receipt. Exactly one may win.
+  // Exercise the real transaction retries, not only the in-memory unit store.
+  for (const n of [1, 2]) {
+    const entity = "invoices/invoice-cancel-race-00" + n;
+    const attempt = {
+      expectedVersion: 0,
+      mutationId: randomUUID(),
+      data: { ...inv(), documentNumber: "CANCEL-RACE-" + n },
+    };
+    const cancelPath = "mutations/" + attempt.mutationId + "/cancel";
+    const cancelRequest = () => api(cancelPath, { entity }, "POST");
+    const saveRequest = () => api(entity, attempt);
+    const results = await Promise.all(
+      n === 1
+        ? [cancelRequest(), saveRequest()]
+        : [saveRequest(), cancelRequest()],
+    );
+    const [cancelled, saved] = n === 1 ? results : results.reverse();
+    assert.equal(cancelled.status, 200, await cancelled.clone().text());
+    const outcome = await cancelled.json();
+    const persisted = await api(entity);
+    if (outcome.status === "cancelled") {
+      assert.equal(saved.status, 409, await saved.clone().text());
+      assert.equal((await saved.json()).error.code, "MUTATION_CANCELLED");
+      assert.equal(persisted.status, 404);
+    } else {
+      assert.equal(outcome.status, "committed");
+      assert.equal(saved.status, 200, await saved.clone().text());
+      assert.equal(persisted.status, 200);
+      assert.equal(outcome.record.id, entity.split("/")[1]);
+      assert.equal((await (await api(entity, attempt)).json()).replayed, true);
+    }
+    assert.equal((await (await cancelRequest()).json()).status, outcome.status);
+  }
   const firestoreUrl =
     "http://" +
     process.env.FIRESTORE_EMULATOR_HOST +

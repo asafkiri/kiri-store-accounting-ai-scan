@@ -57,6 +57,19 @@ export class AccountingService {
     const reply = await this.store.transaction(async (tx) => {
       const receipt = await tx.get(receiptKey);
       if (receipt) {
+        if (receipt.state === "cancelled") {
+          if (receipt.entity !== key)
+            fail(
+              409,
+              "IDEMPOTENCY_CONFLICT",
+              "מזהה הבקשה כבר משויך לרשומה אחרת.",
+            );
+          fail(
+            409,
+            "MUTATION_CANCELLED",
+            "ניסיון השמירה הזה בוטל. אפשר לערוך ולשמור מחדש.",
+          );
+        }
         if (receipt.fingerprint !== fingerprint)
           fail(
             409,
@@ -104,6 +117,8 @@ export class AccountingService {
         await checkSupplierName(tx, next, previous);
       if (collection === "invoices") {
         if (action === "save") {
+          // Check after the receipt so retries of previously committed data still replay.
+          v.creditAmounts(next);
           supplierChange = await prepareInvoiceSupplier(
             tx,
             next,
@@ -228,6 +243,52 @@ export class AccountingService {
       uid,
       data: v.supplier(body.data),
     });
+  }
+  async cancelMutation(mutationId, body, uid) {
+    v.id(mutationId);
+    v.object(body, ["entity"]);
+    const match =
+      typeof body.entity === "string" &&
+      body.entity.match(
+        /^(suppliers|invoices|daily-cash)\/([a-zA-Z0-9_-]{8,100})$/,
+      );
+    if (!match) fail(400, "INVALID_INPUT", "בקשת הביטול אינה תקינה.");
+    const key =
+      (match[1] === "daily-cash" ? "dailyCash" : match[1]) + "/" + match[2];
+    const receiptKey = "mutations/" + mutationId;
+    const receipt = await this.store.transaction(async (tx) => {
+      const saved = await tx.get(receiptKey);
+      if (saved) {
+        if (saved.entity !== key)
+          fail(
+            409,
+            "IDEMPOTENCY_CONFLICT",
+            "מזהה הבקשה כבר משויך לרשומה אחרת.",
+          );
+        return saved;
+      }
+      const cancelled = {
+        id: mutationId,
+        entity: key,
+        state: "cancelled",
+        at: tx.stamp(),
+        by: uid,
+      };
+      tx.set(receiptKey, cancelled);
+      return cancelled;
+    });
+    if (receipt.state === "cancelled") return { status: "cancelled" };
+    return {
+      status: "committed",
+      path: body.entity,
+      record: await this.store.get(key),
+      relatedRecords: await Promise.all(
+        (receipt.relatedPaths || []).map(async (path) => ({
+          path,
+          record: await this.store.get(path),
+        })),
+      ),
+    };
   }
   async saveInvoice(id, body, uid) {
     v.object(body, ["expectedVersion", "mutationId", "data"]);
