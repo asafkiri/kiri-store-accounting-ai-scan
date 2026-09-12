@@ -2,9 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { AccountingService } from "../src/invoices.js";
-import { MemoryStore, inv, aiResult } from "./helpers.js";
+import { MemoryStore, inv } from "./helpers.js";
 import { summarize } from "../src/validation.js";
-import { validateInvoiceExtraction } from "../src/ai-schema.js";
 
 const uid = "addendum-owner";
 const body = (data, expectedVersion = 0) => ({
@@ -79,15 +78,6 @@ test("credit magnitudes normalize on reviewed save while zero totals remain inva
   const positive = await service.saveInvoice("credit-magnitude", body({ ...credit(3540), documentNumber: "MAG-1", subtotalAgorot: 3000, vatAgorot: 540 }), uid);
   assert.equal(positive.record.subtotalAgorot, -3000);
   assert.equal(positive.record.vatAgorot, -540);
-});
-test("AI keeps positive numbers printed on a credit and explicitly flags sign review", () => {
-  const raw = { ...aiResult(), documentType: "credit" };
-  const result = validateInvoiceExtraction(raw);
-  assert.equal(result.totalAgorot, raw.totalAgorot);
-  assert.equal(result.vatAgorot, raw.vatAgorot);
-  assert.equal(result.needsReview, true);
-  assert.ok(result.uncertainFields.includes("finalAgorot"));
-  assert.match(result.warnings.join(" "), /זיכוי.*כהפחתה/);
 });
 test("legacy positive credits are flagged instead of reporting a misleading aggregate", () => {
   const totals = summarize([

@@ -7,7 +7,7 @@ import { getApps, deleteApp } from "firebase-admin/app";
 import sharp from "sharp";
 import { firebaseServices } from "../src/firebase.js";
 import { createHandler } from "../src/http.js";
-import { config, inv, aiResult } from "./helpers.js";
+import { config, inv } from "./helpers.js";
 
 const projectId = "demo-kiri-accounting";
 if (
@@ -63,7 +63,6 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     createHandler({
       ...services,
       config: localConfig,
-      invokeAI: async () => aiResult(),
       log: () => {},
     }),
   );
@@ -177,15 +176,7 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   const metadata = await sharp(storedBytes).metadata();
   assert.equal(metadata.width, 24);
   assert.equal(metadata.height, 24);
-  const scan = await api(
-    "scan-invoice",
-    { jobId: randomUUID(), attachmentIds: [doc.id] },
-    "POST",
-  );
-  assert.equal(scan.status, 200, await scan.clone().text());
-  const scanResult = await scan.json();
-  assert.equal(scanResult.result.vatAgorot, 1800);
-  // Native Firestore types must survive update spreads, audit snapshots and scan replay.
+  // Native Firestore types must survive update spreads and audit snapshots.
   const paidRaw = await raw("invoices/invoice-001");
   assert.ok(paidRaw.createdAt instanceof Timestamp);
   assert.ok(paidRaw.payment.recordedAt instanceof Timestamp);
@@ -206,14 +197,6 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   const restored = await api("invoices/invoice-001/restore", { expectedVersion: 4, mutationId: restoreId }, "POST");
   assert.equal(restored.status, 200, await restored.clone().text());
   assert.ok((await raw("mutations/" + restoreId)).before.deletedAt instanceof Timestamp);
-  const scanRaw = await raw("scanJobs/" + scanResult.id);
-  assert.ok(scanRaw.createdAt instanceof Timestamp);
-  assert.ok(scanRaw.completedAt instanceof Timestamp);
-  const replay = await api("scan-invoice", { jobId: scanResult.id, attachmentIds: [doc.id] }, "POST");
-  assert.equal(replay.status, 200);
-  const replayed = await replay.json();
-  assert.equal(typeof replayed.createdAt, "number");
-  assert.equal(replayed.createdAt, scanResult.createdAt);
   const snapshot = await (await api("sync")).json();
   assert.equal(snapshot.invoices.length, 1);
   assert.equal(snapshot.dailyCash[0].ravKavAgorot, 6789);
@@ -223,9 +206,8 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     data: {
       ...inv(),
       supplierId: "supplier-inline-001",
-      source: "ai",
-      scanJobId: scanResult.id,
-      newSupplier: { name: "ספק מסריקה אמולטור" },
+      attachmentIds: [doc.id],
+      newSupplier: { name: "ספק מצילום אמולטור" },
     },
   };
   const inlineResponse = await api("invoices/invoice-inline-001", inlineBody);
@@ -233,7 +215,7 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   const inline = await inlineResponse.json();
   assert.equal(inline.record.createdBy, supplier.createdBy);
   assert.equal(inline.relatedRecords[0].record.createdBy, supplier.createdBy);
-  assert.equal(inline.relatedRecords[0].record.createdFrom, "scan");
+  assert.equal(inline.relatedRecords[0].record.createdFrom, "manual");
   assert.equal(
     (await (await api("invoices/invoice-inline-001", inlineBody)).json())
       .replayed,

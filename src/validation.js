@@ -102,7 +102,6 @@ export function invoice(v) {
     "reviewConfirmed",
     "newSupplier",
     "reactivateSupplier",
-    "bindTaxIds",
   ]);
   if (!Array.isArray(v.deductions) || v.deductions.length > 30)
     fail(400, "INVALID_INPUT", "אפשר להוסיף עד 30 שורות הפחתה.");
@@ -118,7 +117,6 @@ export function invoice(v) {
   });
   if (!Array.isArray(v.attachmentIds) || v.attachmentIds.length > 8)
     fail(400, "INVALID_INPUT", "אפשר לצרף עד 8 קבצים.");
-  const source = oneOf(v.source, ["manual", "ai"]);
   if (v.reviewConfirmed !== true)
     fail(400, "REVIEW_REQUIRED", "יש לבדוק ולאשר את החשבונית לפני השמירה.");
   const result = {
@@ -138,12 +136,11 @@ export function invoice(v) {
     deductions,
     notes: str(v.notes, 4000),
     attachmentIds: [...new Set(v.attachmentIds.map(id))],
-    source,
-    scanJobId: v.scanJobId === null ? null : id(v.scanJobId),
+    // Every invoice is typed from the paper. The two fields a reading once
+    // filled are still accepted from an older page and ignored.
+    source: "manual",
     reviewConfirmed: true,
   };
-  if (source === "ai" && !result.scanJobId)
-    fail(400, "REVIEW_REQUIRED", "לא נמצאה סריקה לבדיקה.");
   if (v.newSupplier !== undefined && v.reactivateSupplier !== undefined)
     fail(400, "INVALID_INPUT", "יש לבחור פתיחת ספק או הפעלה מחדש.");
   if (v.newSupplier !== undefined) {
@@ -155,15 +152,6 @@ export function invoice(v) {
       active: true,
       taxIds: v.newSupplier.taxIds ?? [],
     });
-  }
-  // Attaching the printed identifier to a supplier this invoice already names
-  // is what lets the next invoice match on the number instead of on the name.
-  if (v.bindTaxIds !== undefined) {
-    if (v.newSupplier !== undefined || v.reactivateSupplier !== undefined)
-      fail(400, "INVALID_INPUT", "אי אפשר לקשר מספר זיהוי יחד עם פתיחת ספק.");
-    result.bindTaxIds = taxIdList(v.bindTaxIds);
-    if (!result.bindTaxIds.length)
-      fail(400, "INVALID_INPUT", "לא נמסר מספר זיהוי לקישור.");
   }
   if (v.reactivateSupplier !== undefined) {
     object(v.reactivateSupplier, ["expectedVersion"]);
