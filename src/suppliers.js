@@ -78,5 +78,25 @@ export async function prepareInvoiceSupplier(
     (!supplier.active && previous?.supplierId !== invoice.supplierId)
   )
     fail(400, "SUPPLIER_MISSING", "יש לבחור ספק פעיל.");
+  // Backfill is additive and never renames: a supplier matched by name this
+  // time keeps the printed identifier so the next invoice matches on it. An
+  // identifier the record already holds writes nothing.
+  if (intent?.bindTaxIds) {
+    const taxIds = [
+      ...new Set([...(supplier.taxIds || []), ...intent.bindTaxIds]),
+    ];
+    if (taxIds.length === (supplier.taxIds || []).length) return null;
+    return {
+      record: {
+        ...supplier,
+        taxIds,
+        version: supplier.version + 1,
+        updatedAt: tx.stamp(),
+        updatedBy: uid,
+      },
+      before: supplier,
+      action: "linked",
+    };
+  }
   return null;
 }

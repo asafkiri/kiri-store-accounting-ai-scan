@@ -66,6 +66,7 @@ export const config = {
   allowedOrigins: ["https://kiri-store-accounting.web.app"],
   model: "gpt-5.6-luna",
   openaiKey: "unit-test-only",
+  storeTaxId: "069991651",
   dailyScanLimit: 30,
   monthlyScanLimit: 300,
 };
@@ -94,6 +95,22 @@ export const aiResult = () => ({
   totalAgorot: 11800,
   finalAgorot: 11800,
   documentType: "invoice",
+  pagesPrinted: null,
+  pagesRead: null,
+  identifiers: [
+    {
+      label: "ח.פ",
+      value: "511091753",
+      party: "issuer",
+      evidence: "ח.פ 511091753",
+    },
+    {
+      label: "ע.מ",
+      value: "069991651",
+      party: "recipient",
+      evidence: "ע.מ 069991651",
+    },
+  ],
   deductions: [],
   evidence: {
     supplierName: "ספק בדיקה",

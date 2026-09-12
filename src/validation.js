@@ -1,5 +1,6 @@
 import { fail } from "./errors.js";
 import { creditSignIssues } from "./credit.js";
+import { isValidTaxId, normalizeTaxId } from "./tax-id.js";
 export const MAX_MONEY = 100_000_000_000;
 export const isRecord = (v) =>
   v !== null && typeof v === "object" && !Array.isArray(v);
@@ -50,8 +51,26 @@ export function oneOf(v, options) {
     fail(400, "INVALID_INPUT", "אחת הבחירות אינה תקינה.");
   return v;
 }
+// A supplier is identified by the ח.פ/ע.מ printed on its invoices, not by
+// however its name was typed. A group can print several of its companies on one
+// page, so a supplier holds a set; a consolidated group file is never in it.
+export function taxIdList(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 10)
+    fail(400, "INVALID_INPUT", "רשימת מספרי הזיהוי של הספק אינה תקינה.");
+  return [
+    ...new Set(
+      value.map((raw) => {
+        const id = normalizeTaxId(raw);
+        if (!isValidTaxId(id))
+          fail(400, "INVALID_TAX_ID", "מספר ח.פ/ע.מ של הספק אינו תקין.");
+        return id;
+      }),
+    ),
+  ];
+}
 export function supplier(v) {
-  object(v, ["name", "notes", "contact", "active"]);
+  object(v, ["name", "notes", "contact", "active", "taxIds"]);
   if (typeof v.active !== "boolean")
     fail(400, "INVALID_INPUT", "מצב הספק אינו תקין.");
   return {
@@ -59,6 +78,10 @@ export function supplier(v) {
     notes: str(v.notes, 2000),
     contact: str(v.contact, 200),
     active: v.active,
+    // Omitting the field keeps whatever the record already holds, so renaming a
+    // supplier or marking it inactive cannot quietly drop the identifiers its
+    // invoices are matched by. An explicit empty list still clears them.
+    ...(v.taxIds === undefined ? {} : { taxIds: taxIdList(v.taxIds) }),
   };
 }
 export function invoice(v) {
@@ -79,6 +102,7 @@ export function invoice(v) {
     "reviewConfirmed",
     "newSupplier",
     "reactivateSupplier",
+    "bindTaxIds",
   ]);
   if (!Array.isArray(v.deductions) || v.deductions.length > 30)
     fail(400, "INVALID_INPUT", "אפשר להוסיף עד 30 שורות הפחתה.");
@@ -123,13 +147,23 @@ export function invoice(v) {
   if (v.newSupplier !== undefined && v.reactivateSupplier !== undefined)
     fail(400, "INVALID_INPUT", "יש לבחור פתיחת ספק או הפעלה מחדש.");
   if (v.newSupplier !== undefined) {
-    object(v.newSupplier, ["name"]);
+    object(v.newSupplier, ["name", "taxIds"]);
     result.newSupplier = supplier({
       name: v.newSupplier.name,
       notes: "",
       contact: "",
       active: true,
+      taxIds: v.newSupplier.taxIds ?? [],
     });
+  }
+  // Attaching the printed identifier to a supplier this invoice already names
+  // is what lets the next invoice match on the number instead of on the name.
+  if (v.bindTaxIds !== undefined) {
+    if (v.newSupplier !== undefined || v.reactivateSupplier !== undefined)
+      fail(400, "INVALID_INPUT", "אי אפשר לקשר מספר זיהוי יחד עם פתיחת ספק.");
+    result.bindTaxIds = taxIdList(v.bindTaxIds);
+    if (!result.bindTaxIds.length)
+      fail(400, "INVALID_INPUT", "לא נמסר מספר זיהוי לקישור.");
   }
   if (v.reactivateSupplier !== undefined) {
     object(v.reactivateSupplier, ["expectedVersion"]);

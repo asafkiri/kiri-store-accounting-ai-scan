@@ -332,7 +332,9 @@ export class AccountingService {
   }
   async saveInvoice(id, body, uid) {
     v.object(body, ["expectedVersion", "mutationId", "data"]);
-    const { newSupplier, reactivateSupplier, ...data } = v.invoice(body.data);
+    const { newSupplier, reactivateSupplier, bindTaxIds, ...data } = v.invoice(
+      body.data,
+    );
     return this.mutate({
       collection: "invoices",
       id,
@@ -344,7 +346,9 @@ export class AccountingService {
         ? { newSupplier }
         : reactivateSupplier
           ? { reactivateSupplier }
-          : null,
+          : bindTaxIds
+            ? { bindTaxIds }
+            : null,
     });
   }
   async saveCash(id, body, uid) {

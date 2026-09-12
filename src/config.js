@@ -1,3 +1,4 @@
+import { isValidTaxId, normalizeTaxId } from "./tax-id.js";
 export function configFromEnv(env = process.env) {
   const production = env.NODE_ENV === "production";
   if (
@@ -32,6 +33,12 @@ export function configFromEnv(env = process.env) {
     throw new Error("ALLOWED_PHONE_NUMBER must be E.164");
   if (env.OPENAI_MODEL && env.OPENAI_MODEL !== "gpt-5.6-luna")
     throw new Error("V1 permits gpt-5.6-luna only");
+  // The store's own ח.פ/ע.מ separates the supplier from the recipient on every
+  // invoice. A wrong value here misreads every document, so reject it at boot
+  // rather than at scan time.
+  const storeTaxId = normalizeTaxId(env.STORE_TAX_ID || "");
+  if (env.STORE_TAX_ID && !isValidTaxId(storeTaxId))
+    throw new Error("STORE_TAX_ID must be a valid Israeli ח.פ/ע.מ");
   const limit = (name, fallback, max) => {
     const v = Number(env[name] ?? fallback);
     if (!Number.isInteger(v) || v < 1 || v > max)
@@ -50,7 +57,10 @@ export function configFromEnv(env = process.env) {
     allowedOrigins,
     openaiKey: env.OPENAI_API_KEY || "",
     model: "gpt-5.6-luna",
+    storeTaxId,
     dailyScanLimit: limit("MAX_SCANS_PER_DAY", 30, 100),
-    monthlyScanLimit: limit("MAX_SCANS_PER_MONTH", 300, 3000),
+    // Every document is photographed, so the month's ceiling has to cover a
+    // full store: roughly twenty invoices a day over twenty-two working days.
+    monthlyScanLimit: limit("MAX_SCANS_PER_MONTH", 900, 3000),
   };
 }
