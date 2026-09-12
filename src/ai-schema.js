@@ -27,6 +27,8 @@ export const invoiceJsonSchema = {
   required: [
     ...fields,
     "documentType",
+    "pagesPrinted",
+    "pagesRead",
     "identifiers",
     "deductions",
     "evidence",
@@ -46,6 +48,12 @@ export const invoiceJsonSchema = {
     vatAgorot: amountSchema,
     totalAgorot: amountSchema,
     finalAgorot: amountSchema,
+    // "דף 1 מתוך 2" printed on a page whose second page was never photographed
+    // leaves the total on the page that is missing, so the count is read and
+    // compared here instead of the shortfall showing up as an unexplained
+    // question about an amount that is not in front of anyone.
+    pagesPrinted: { type: ["integer", "null"] },
+    pagesRead: { type: ["integer", "null"] },
     // Transcribed, not interpreted: the printed label and digits of every
     // company/VAT number on the page. Which one is the supplier is decided here
     // against the store's own number, never by the model.
@@ -228,6 +236,22 @@ export function validateInvoiceExtraction(raw) {
       if (hasPrintedRounding(d)) printedRoundingAgorot += d.amountAgorot;
       else result.needsReview = true;
     }
+  }
+  // A document that states how many pages it has, and was handed fewer, is
+  // missing printed figures rather than illegible ones. Say which, so the fix
+  // is to photograph the rest instead of to hunt for a number.
+  const { pagesPrinted, pagesRead } = result;
+  if (
+    Number.isInteger(pagesPrinted) &&
+    Number.isInteger(pagesRead) &&
+    pagesPrinted > 0 &&
+    pagesRead > 0 &&
+    pagesRead < pagesPrinted
+  ) {
+    result.needsReview = true;
+    result.warnings.push(
+      `המסמך מצוין כבן ${pagesPrinted} עמודים ונסרקו ${pagesRead}. הסכומים שמופיעים בעמודים החסרים לא נקראו. יש לצלם את שאר העמודים.`,
+    );
   }
   // An identifier needs its printed excerpt exactly as an amount does, and a
   // value failing its own check digit was misread or mistyped at the supplier.

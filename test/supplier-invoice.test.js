@@ -251,3 +251,107 @@ test("standalone supplier creation, rename and reactivation also enforce normali
     (e) => e.code === "SUPPLIER_EXISTS",
   );
 });
+
+test("an invoice binds the printed identifier to the supplier it already names", async () => {
+  const { store, service } = setup();
+  await service.saveSupplier(
+    "supplier-tnuva",
+    body({ name: "תנובה קפואים", notes: "", contact: "", active: true }),
+    uid,
+  );
+  // The first invoice reaches this supplier by name and leaves its number behind.
+  await service.saveInvoice(
+    randomUUID(),
+    body({
+      ...inv(),
+      supplierId: "supplier-tnuva",
+      bindTaxIds: ["783034218"],
+    }),
+    uid,
+  );
+  assert.deepEqual(
+    (await store.get("suppliers/supplier-tnuva")).taxIds,
+    ["783034218"],
+  );
+  // A group prints several of its companies, and binding is additive.
+  await service.saveInvoice(
+    randomUUID(),
+    body({
+      ...inv(),
+      documentNumber: "1002",
+      supplierId: "supplier-tnuva",
+      bindTaxIds: ["783034218", "570000745"],
+    }),
+    uid,
+  );
+  const merged = await store.get("suppliers/supplier-tnuva");
+  assert.deepEqual(merged.taxIds, ["783034218", "570000745"]);
+  // Re-sending what the record already holds writes nothing.
+  const before = merged.version;
+  await service.saveInvoice(
+    randomUUID(),
+    body({
+      ...inv(),
+      documentNumber: "1003",
+      supplierId: "supplier-tnuva",
+      bindTaxIds: ["783034218"],
+    }),
+    uid,
+  );
+  assert.equal((await store.get("suppliers/supplier-tnuva")).version, before);
+});
+
+test("editing a supplier never silently drops the identifiers it is matched by", async () => {
+  const { store, service } = setup();
+  await service.saveSupplier(
+    "supplier-globus",
+    body({
+      name: "גלובוס",
+      notes: "",
+      contact: "",
+      active: true,
+      taxIds: ["513036434"],
+    }),
+    uid,
+  );
+  // Renaming and deactivating send no taxIds at all; the record keeps them.
+  await service.saveSupplier(
+    "supplier-globus",
+    body(
+      { name: "גלובוס בע״מ", notes: "", contact: "", active: false },
+      1,
+    ),
+    uid,
+  );
+  const renamed = await store.get("suppliers/supplier-globus");
+  assert.equal(renamed.name, "גלובוס בע״מ");
+  assert.deepEqual(renamed.taxIds, ["513036434"]);
+  // Clearing them stays possible, but only by asking for it.
+  await service.saveSupplier(
+    "supplier-globus",
+    body(
+      { name: "גלובוס בע״מ", notes: "", contact: "", active: false, taxIds: [] },
+      2,
+    ),
+    uid,
+  );
+  assert.deepEqual((await store.get("suppliers/supplier-globus")).taxIds, []);
+});
+
+test("a misread identifier is refused rather than bound", async () => {
+  const { store, service } = setup();
+  await service.saveSupplier(
+    "supplier-ice",
+    body({ name: "Mr. ICE", notes: "", contact: "", active: true }),
+    uid,
+  );
+  await assert.rejects(
+    service.saveInvoice(
+      randomUUID(),
+      body({ ...inv(), supplierId: "supplier-ice", bindTaxIds: ["89991651"] }),
+      uid,
+    ),
+    (e) => e.code === "INVALID_TAX_ID",
+  );
+  assert.equal((await store.get("suppliers/supplier-ice")).taxIds, undefined);
+});

@@ -95,6 +95,8 @@ export const aiResult = () => ({
   totalAgorot: 11800,
   finalAgorot: 11800,
   documentType: "invoice",
+  pagesPrinted: null,
+  pagesRead: null,
   identifiers: [
     {
       label: "ח.פ",

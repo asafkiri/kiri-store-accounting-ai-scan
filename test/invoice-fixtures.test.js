@@ -35,7 +35,7 @@ const PRINTED = [
   ["חשבונית מרכזת SI266045233", 14900, 2682, 0, 17582],
 ];
 
-function extraction({ subtotal, vat, total, rounding = 0, deductions = [] }) {
+function extraction({ subtotal, vat, total, rounding = 0, deductions = [], pagesPrinted = null, pagesRead = null }) {
   const rows = [...deductions];
   if (rounding)
     rows.push({
@@ -49,6 +49,8 @@ function extraction({ subtotal, vat, total, rounding = 0, deductions = [] }) {
     documentNumber: "1",
     invoiceDate: "2026-06-01",
     documentType: "invoice",
+    pagesPrinted,
+    pagesRead,
     subtotalAgorot: subtotal,
     vatAgorot: vat,
     totalAgorot: total,
@@ -202,5 +204,35 @@ test("each supplier resolves to its own entity identifier, never a group file", 
       { label: "ע.מ/ח.פ", value: STORE, party: "recipient" },
     ];
     assert.deepEqual(supplierTaxIds(identifiers, STORE), expected, supplier);
+  }
+});
+
+test("a document handed fewer pages than it states says so instead of just asking", () => {
+  // Strauss Group prints "דף 1 מתוך 2" with the total on the page that was not
+  // photographed, so the amount is missing rather than illegible.
+  const result = validateInvoiceExtraction(
+    extraction({
+      subtotal: 2092453,
+      vat: 376642,
+      total: null,
+      pagesPrinted: 2,
+      pagesRead: 1,
+    }),
+  );
+  assert.equal(result.totalAgorot, null);
+  assert.equal(result.needsReview, true);
+  assert.ok(result.warnings.some((w) => /2 עמודים ונסרקו 1/.test(w)));
+});
+
+test("a complete document, or one that never states a page count, says nothing", () => {
+  for (const pages of [
+    { pagesPrinted: 2, pagesRead: 2 },
+    { pagesPrinted: null, pagesRead: null },
+    { pagesPrinted: null, pagesRead: 1 },
+  ]) {
+    const result = validateInvoiceExtraction(
+      extraction({ subtotal: 456780, vat: 82220, total: 539000, ...pages }),
+    );
+    assert.deepEqual(result.warnings, [], JSON.stringify(pages));
   }
 });

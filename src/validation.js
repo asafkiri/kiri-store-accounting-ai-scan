@@ -78,7 +78,10 @@ export function supplier(v) {
     notes: str(v.notes, 2000),
     contact: str(v.contact, 200),
     active: v.active,
-    taxIds: taxIdList(v.taxIds),
+    // Omitting the field keeps whatever the record already holds, so renaming a
+    // supplier or marking it inactive cannot quietly drop the identifiers its
+    // invoices are matched by. An explicit empty list still clears them.
+    ...(v.taxIds === undefined ? {} : { taxIds: taxIdList(v.taxIds) }),
   };
 }
 export function invoice(v) {
@@ -150,7 +153,7 @@ export function invoice(v) {
       notes: "",
       contact: "",
       active: true,
-      taxIds: v.newSupplier.taxIds,
+      taxIds: v.newSupplier.taxIds ?? [],
     });
   }
   // Attaching the printed identifier to a supplier this invoice already names
