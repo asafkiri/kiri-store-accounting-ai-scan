@@ -36,6 +36,16 @@ export function firebaseServices(config) {
         if (after) q = q.startAfter(after);
         return (await q.get()).docs.map((d) => normalize(d.data()));
       },
+      // The single-field index Firestore keeps for every array member answers
+      // "which invoices still point at this file" without reading them all.
+      query: async (collection, field, value, limit = 50) =>
+        (
+          await root
+            .collection(collection)
+            .where(field, "array-contains", value)
+            .limit(limit)
+            .get()
+        ).docs.map((d) => normalize(d.data())),
       transaction: (fn) =>
         db.runTransaction(async (native) =>
           fn({
@@ -47,7 +57,17 @@ export function firebaseServices(config) {
               (await native.get(root.collection(collection))).docs.map((d) =>
                 d.data(),
               ),
+            query: async (collection, field, value, limit = 50) =>
+              (
+                await native.get(
+                  root
+                    .collection(collection)
+                    .where(field, "array-contains", value)
+                    .limit(limit),
+                )
+              ).docs.map((d) => d.data()),
             set: (key, data) => native.set(ref(key), data),
+            delete: (key) => native.delete(ref(key)),
             stamp: () => FieldValue.serverTimestamp(),
           }),
         ),
@@ -71,6 +91,14 @@ export function firebaseServices(config) {
       },
       get: async (key) =>
         (await getStorage(app).bucket().file(key).download())[0],
+      // A file the store removed is gone for good: no versioning, no recycle
+      // bin, and a second attempt after a partial deletion still succeeds.
+      delete: async (key) => {
+        await getStorage(app)
+          .bucket()
+          .file(key)
+          .delete({ ignoreNotFound: true });
+      },
     },
   };
 }

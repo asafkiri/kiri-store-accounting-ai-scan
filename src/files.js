@@ -1,8 +1,13 @@
+import { randomBytes } from "node:crypto";
 import { fail } from "./errors.js";
 import { object, str } from "./validation.js";
 import { hash } from "./invoices.js";
 export const MAX_UPLOAD_BYTES = 12 * 1024 * 1024,
   MAX_PAGES = 8;
+// Older records were always stored under their own id. A record re-created
+// while its deletion is still running carries the path of its own new object.
+export const documentPath = (id, record = null) =>
+  record?.storagePath || "documents/" + id;
 export async function validateFiles(input) {
   if (!Array.isArray(input) || !input.length || input.length > MAX_PAGES)
     fail(400, "INVALID_FILES", "יש לבחור בין קובץ אחד ל־8 קבצים.");
@@ -123,20 +128,45 @@ export class DocumentService {
     for (const f of files) {
       const key = "documents/" + f.id;
       let record = await this.store.get(key);
-      if (!record) {
-        await this.storage.put("documents/" + f.id, f.bytes, f.mime);
+      if (!record || record.purgingAt) {
+        // A record whose deletion is already running must not hand its object
+        // to a new invoice: the fresh copy gets its own path, so finishing that
+        // deletion removes the old object only. The retention clock restarts.
+        const replacing = Boolean(record);
+        const path = replacing
+          ? key + "~" + randomBytes(6).toString("hex")
+          : key;
+        await this.storage.put(path, f.bytes, f.mime);
+        const wrote = await this.store.transaction(async (tx) => {
+          const old = await tx.get(key);
+          if (old && !old.purgingAt) return false;
+          tx.set(key, {
+            id: f.id,
+            name: f.name,
+            mime: f.mime,
+            pages: f.pages,
+            size: f.bytes.length,
+            storagePath: path,
+            createdAt: tx.stamp(),
+            createdBy: uid,
+            uploadedAt: tx.stamp(),
+            uploadedBy: uid,
+            purgingAt: null,
+          });
+          return true;
+        });
+        // Losing that race leaves an object nothing points at. Only a unique
+        // replacement path is ours to remove; the shared one is the winner's.
+        if (!wrote && replacing)
+          await this.storage.delete(path).catch(() => {});
+        record = await this.store.get(key);
+      } else {
+        // The same photo attached to another invoice is in use again today,
+        // so the purge counts the year from this upload and not from the first.
         await this.store.transaction(async (tx) => {
           const old = await tx.get(key);
-          if (!old)
-            tx.set(key, {
-              id: f.id,
-              name: f.name,
-              mime: f.mime,
-              pages: f.pages,
-              size: f.bytes.length,
-              createdAt: tx.stamp(),
-              createdBy: uid,
-            });
+          if (old && !old.purgingAt)
+            tx.set(key, { ...old, uploadedAt: tx.stamp(), uploadedBy: uid });
         });
         record = await this.store.get(key);
       }
@@ -157,13 +187,16 @@ export class DocumentService {
       total = 0;
     for (const id of [...new Set(ids)]) {
       const meta = await this.store.get("documents/" + id);
-      if (!meta)
+      if (!meta || meta.purgingAt)
         fail(404, "FILE_MISSING", "המסמך לא נמצא. יש להעלות אותו שוב.");
       pages += meta.pages;
       total += meta.size;
       if (pages > 8 || total > MAX_UPLOAD_BYTES)
         fail(413, "TOO_MANY_PAGES", "סך הקבצים מוגבל ל־8 עמודים ו־12 מגה.");
-      files.push({ ...meta, bytes: await this.storage.get("documents/" + id) });
+      files.push({
+        ...meta,
+        bytes: await this.storage.get(documentPath(id, meta)),
+      });
     }
     return files;
   }
