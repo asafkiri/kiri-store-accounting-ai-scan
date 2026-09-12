@@ -2,6 +2,7 @@ import { isRecord, date, MAX_MONEY } from "./validation.js";
 import { fail } from "./errors.js";
 import { creditSignIssues } from "./credit.js";
 import { isValidTaxId } from "./tax-id.js";
+import { normalizeSupplierName } from "./supplier-name.js";
 const shekels = (agorot) => (agorot / 100).toFixed(2);
 const nullableString = { type: ["string", "null"] };
 const fields = [
@@ -333,6 +334,57 @@ export function validateInvoiceExtraction(raw) {
   result.needsReview =
     result.needsReview || uncertain.size > 0 || !result.documentType;
   return result;
+}
+// Two readings of the same photograph agree wherever the print is clear and
+// part company exactly where it is not. A value both readings reached is as
+// close to verified as this system gets; a value they disagree on is emptied
+// and marked uncertain, so the review asks for it in the ordinary question flow
+// instead of showing one of two readings as though it were what is printed.
+// This catches a misread the model was confident about. It cannot catch one it
+// makes the same way twice, so it raises the floor rather than promising a
+// correct reading.
+const sameReading = {
+  supplierName: (a, b) => normalizeSupplierName(a) === normalizeSupplierName(b),
+  documentNumber: (a, b) =>
+    String(a).trim().toUpperCase() === String(b).trim().toUpperCase(),
+};
+const deductionShape = (list) =>
+  list
+    .map(
+      (d) =>
+        `${(d.label || "").trim()}|${d.amountAgorot}|${d.includedInTotal}`,
+    )
+    .sort()
+    .join("~");
+export function mergeInvoiceReadings(readings) {
+  const [first, ...rest] = readings;
+  if (!rest.length) return { ...first, readings: 1 };
+  const merged = structuredClone(first);
+  const uncertain = new Set(readings.flatMap((r) => r.uncertainFields));
+  for (const key of [...fields, "documentType"]) {
+    const agreed = rest.every((r) =>
+      r[key] === null || first[key] === null
+        ? r[key] === first[key]
+        : (sameReading[key] || ((a, b) => a === b))(r[key], first[key]),
+    );
+    if (agreed) continue;
+    merged[key] = null;
+    if (Object.hasOwn(merged.evidence, key)) merged.evidence[key] = null;
+    uncertain.add(key);
+  }
+  // A deduction changes what is paid, so a disagreement keeps the lines that
+  // were read and asks about each one, rather than dropping a discount in
+  // silence.
+  if (rest.some((r) => deductionShape(r.deductions) !== deductionShape(first.deductions)))
+    uncertain.add("deductions");
+  merged.identifiers = first.identifiers.filter((entry) =>
+    rest.every((r) => r.identifiers.some((o) => o.value === entry.value)),
+  );
+  merged.warnings = [...new Set(readings.flatMap((r) => r.warnings))];
+  merged.uncertainFields = [...uncertain];
+  merged.needsReview = readings.some((r) => r.needsReview) || uncertain.size > 0;
+  merged.readings = readings.length;
+  return merged;
 }
 export function validateReportExtraction(raw) {
   if (!matchesSchema(raw, reportJsonSchema))

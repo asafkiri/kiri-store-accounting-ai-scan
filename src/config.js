@@ -58,6 +58,10 @@ export function configFromEnv(env = process.env) {
     openaiKey: env.OPENAI_API_KEY || "",
     model: "gpt-5.6-luna",
     storeTaxId,
+    // Each scan is read this many times at once and the readings are compared,
+    // so a field only survives when they agree. It multiplies what a scan costs
+    // at the model, and the scan counters below still count one per document.
+    readingsPerScan: limit("READINGS_PER_SCAN", 2, 3),
     dailyScanLimit: limit("MAX_SCANS_PER_DAY", 30, 100),
     // Every document is photographed, so the month's ceiling has to cover a
     // full store: roughly twenty invoices a day over twenty-two working days.
