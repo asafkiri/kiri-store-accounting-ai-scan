@@ -1,6 +1,8 @@
 import { isRecord, date, MAX_MONEY } from "./validation.js";
 import { fail } from "./errors.js";
 import { creditSignIssues } from "./credit.js";
+import { isValidTaxId } from "./tax-id.js";
+const shekels = (agorot) => (agorot / 100).toFixed(2);
 const nullableString = { type: ["string", "null"] };
 const fields = [
   "supplierName",
@@ -25,6 +27,7 @@ export const invoiceJsonSchema = {
   required: [
     ...fields,
     "documentType",
+    "identifiers",
     "deductions",
     "evidence",
     "uncertainFields",
@@ -43,6 +46,26 @@ export const invoiceJsonSchema = {
     vatAgorot: amountSchema,
     totalAgorot: amountSchema,
     finalAgorot: amountSchema,
+    // Transcribed, not interpreted: the printed label and digits of every
+    // company/VAT number on the page. Which one is the supplier is decided here
+    // against the store's own number, never by the model.
+    identifiers: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["label", "value", "party", "evidence"],
+        properties: {
+          label: nullableString,
+          value: nullableString,
+          party: {
+            type: ["string", "null"],
+            enum: ["issuer", "recipient", null],
+          },
+          evidence: nullableString,
+        },
+      },
+    },
     deductions: {
       type: "array",
       items: {
@@ -206,15 +229,45 @@ export function validateInvoiceExtraction(raw) {
       else result.needsReview = true;
     }
   }
+  // An identifier needs its printed excerpt exactly as an amount does, and a
+  // value failing its own check digit was misread or mistyped at the supplier.
+  result.identifiers = result.identifiers.filter(
+    (entry) =>
+      entry.label?.trim() && entry.evidence?.trim() && isValidTaxId(entry.value),
+  );
+  // The printed pre-VAT figure keeps its job as the one independent check on the
+  // two anchored numbers: deriving it unconditionally would make that check
+  // always pass and hide a misread VAT.
   if (
     [result.subtotalAgorot, result.vatAgorot, result.totalAgorot].every(
       (v) => v !== null,
     ) &&
     result.subtotalAgorot + result.vatAgorot + printedRoundingAgorot !== result.totalAgorot
   ) {
-    result.warnings.push(
-      "הסכום לפני מע״מ ועוד המע״מ אינו שווה לסכום הכולל. המספרים שנקראו לא שונו.",
+    // One mismatch can be attributed rather than merely reported: these
+    // documents print a pre-discount figure (ערך תעודה לפי מחירון, סה"כ לפני
+    // הנחה) directly above the after-discount one, and reading the wrong one
+    // leaves a gap that is exactly a document discount already inside the total.
+    // That identity is exact, so correcting it needs no arithmetic tolerance.
+    // Every other mismatch leaves all three printed numbers untouched, because
+    // there we cannot tell which of them was misread.
+    const corrected =
+      result.totalAgorot - result.vatAgorot - printedRoundingAgorot;
+    const applied = result.deductions.find(
+      (d) =>
+        d.includedInTotal === true &&
+        d.amountAgorot !== null &&
+        result.subtotalAgorot - d.amountAgorot === corrected,
     );
+    if (applied) {
+      result.warnings.push(
+        `הסכום שנקרא לפני מע״מ (${shekels(result.subtotalAgorot)}) הוא לפני ההנחה ״${applied.label}״. נרשם ${shekels(corrected)}, שכבר כולל אותה. יש לבדוק מול המסמך.`,
+      );
+      result.subtotalAgorot = corrected;
+    } else
+      result.warnings.push(
+        "הסכום לפני מע״מ ועוד המע״מ אינו שווה לסכום הכולל. המספרים שנקראו לא שונו.",
+      );
     ["subtotalAgorot", "vatAgorot", "totalAgorot"].forEach((k) =>
       uncertain.add(k),
     );

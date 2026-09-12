@@ -81,14 +81,25 @@ test("multi-page Osem response passes through the request validator with the new
       return { ok: true, json: async () => ({ status: "completed", output: [{ content: [{ type: "output_text", text: JSON.stringify(expected) }] }] }) };
     },
   );
-  assert.deepEqual(result, expected);
+  // The supplier is resolved here, against the store's own number, so the app
+  // receives the answer rather than the configuration it would need to repeat.
+  assert.deepEqual(result, { ...expected, supplierTaxIds: ["511091753"], groupTaxIds: [] });
   assert.equal(sent.input[0].content.filter(c => c.type === "input_image").length, 3);
   assert.match(sent.instructions, /Ignore running customer balance lines/);
   assert.match(sent.instructions, /יתרת לקוח ללא חשבונית זו/);
-  assert.match(sent.instructions, /AFTER-discount amount/);
-  assert.match(sent.instructions, /Do not subtract it again/);
-  assert.match(sent.instructions, /Do not fabricate a rounding line/);
+  assert.match(sent.instructions, /AFTER-discount, pre-VAT figure/);
+  assert.match(sent.instructions, /Do not subtract it a second time/);
+  assert.match(sent.instructions, /Never fabricate a rounding line/);
   assert.match(sent.instructions, /Overlapping photos/);
+  // Each of these rules is here because a real supplier invoice needed it.
+  assert.match(sent.instructions, /business that ISSUED the document/);
+  assert.match(sent.instructions, /שם מחלק, נהג, סוכן, איש מכירות, מוכרן/);
+  assert.match(sent.instructions, /Do not decide which one is the supplier/);
+  assert.match(sent.instructions, /MINUS AFTER the digits/);
+  assert.match(sent.instructions, /may be printed NEGATIVE and therefore ADD/);
+  assert.match(sent.instructions, /percentage rather than shekels/);
+  assert.match(sent.instructions, /is a disclosure, not a deduction/);
+  assert.match(sent.instructions, /דף X מתוך Y/);
 });
 test("valid structured JSON preserved; absent VAT remains null and needsReview", () => {
   assert.deepEqual(validateInvoiceExtraction(aiResult()), aiResult());
