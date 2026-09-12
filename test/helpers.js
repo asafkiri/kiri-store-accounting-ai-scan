@@ -64,12 +64,6 @@ export const config = {
   allowedPhone: "+15555550123",
   allowedUid: "",
   allowedOrigins: ["https://kiri-store-accounting.web.app"],
-  model: "gpt-5.6-luna",
-  openaiKey: "unit-test-only",
-  storeTaxId: "069991651",
-  readingsPerScan: 2,
-  dailyScanLimit: 30,
-  monthlyScanLimit: 300,
 };
 export const inv = () => ({
   supplierId: "supplier-001",
@@ -84,45 +78,5 @@ export const inv = () => ({
   notes: "",
   attachmentIds: [],
   source: "manual",
-  scanJobId: null,
   reviewConfirmed: true,
-});
-export const aiResult = () => ({
-  supplierName: "ספק בדיקה",
-  documentNumber: "123",
-  invoiceDate: "2026-09-10",
-  subtotalAgorot: 10000,
-  vatAgorot: 1800,
-  totalAgorot: 11800,
-  finalAgorot: 11800,
-  documentType: "invoice",
-  pagesPrinted: null,
-  pagesRead: null,
-  identifiers: [
-    {
-      label: "ח.פ",
-      value: "511091753",
-      party: "issuer",
-      evidence: "ח.פ 511091753",
-    },
-    {
-      label: "ע.מ",
-      value: "069991651",
-      party: "recipient",
-      evidence: "ע.מ 069991651",
-    },
-  ],
-  deductions: [],
-  evidence: {
-    supplierName: "ספק בדיקה",
-    documentNumber: "123",
-    invoiceDate: "10.9.2026",
-    subtotalAgorot: "100.00",
-    vatAgorot: "מע״מ 18.00",
-    totalAgorot: "118.00",
-    finalAgorot: "118.00",
-  },
-  uncertainFields: [],
-  needsReview: false,
-  warnings: [],
 });

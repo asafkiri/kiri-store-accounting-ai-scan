@@ -13,7 +13,6 @@ server.listen(config.port, "0.0.0.0", () =>
     JSON.stringify({
       event: "listening",
       port: config.port,
-      model: config.model,
       allowlistConfigured: Boolean(config.allowedPhone || config.allowedUid),
     }),
   ),

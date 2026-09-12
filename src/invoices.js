@@ -154,11 +154,6 @@ export class AccountingService {
                 "ATTACHMENT_MISSING",
                 "קובץ מצורף לא נמצא. יש להעלות אותו שוב.",
               );
-          if (next.source === "ai") {
-            const job = await tx.get("scanJobs/" + next.scanJobId);
-            if (job?.status !== "completed" || job.purpose !== "invoice")
-              fail(400, "REVIEW_REQUIRED", "תוצאת הסריקה אינה זמינה לבדיקה.");
-          }
         }
         const newClaim = claimKey(next),
           oldClaim = previous ? claimKey(previous) : null;
@@ -332,9 +327,7 @@ export class AccountingService {
   }
   async saveInvoice(id, body, uid) {
     v.object(body, ["expectedVersion", "mutationId", "data"]);
-    const { newSupplier, reactivateSupplier, bindTaxIds, ...data } = v.invoice(
-      body.data,
-    );
+    const { newSupplier, reactivateSupplier, ...data } = v.invoice(body.data);
     return this.mutate({
       collection: "invoices",
       id,
@@ -346,9 +339,7 @@ export class AccountingService {
         ? { newSupplier }
         : reactivateSupplier
           ? { reactivateSupplier }
-          : bindTaxIds
-            ? { bindTaxIds }
-            : null,
+          : null,
     });
   }
   async saveCash(id, body, uid) {

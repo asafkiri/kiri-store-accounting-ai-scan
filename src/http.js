@@ -4,8 +4,6 @@ import { authorizeRequest } from "./authorize-request.js";
 import { safeDiagnostic } from "./diagnostics.js";
 import { AccountingService } from "./invoices.js";
 import { DocumentService } from "./files.js";
-import { ScanService } from "./ai.js";
-import { reconcile } from "./reconciliation.js";
 import * as v from "./validation.js";
 const MAX_BODY = 17 * 1024 * 1024;
 async function jsonBody(req, limit = 96 * 1024) {
@@ -31,13 +29,11 @@ export function createHandler({
   storage,
   verifyToken,
   config,
-  invokeAI,
   log = (entry) => console.log(JSON.stringify(entry)),
 }) {
   const accounting = new AccountingService(store),
-    documents = new DocumentService(store, storage),
-    scanner = new ScanService(store, documents, config, invokeAI);
-  // Per-instance in-flight guard bounds decoding memory before the global paid-scan lease.
+    documents = new DocumentService(store, storage);
+  // Per-instance in-flight guard bounds decoding memory.
   let uploadBusy = false;
   return async function handler(req, res) {
     const requestId = randomUUID(),
@@ -63,10 +59,6 @@ export function createHandler({
           "/suppliers",
           "/daily-cash",
           "/documents",
-          "/scan-invoice",
-          "/scan-report",
-          "/reconcile",
-          "/scan-jobs",
           "/backup",
           "/mutations",
         ].includes(segment)
@@ -296,33 +288,6 @@ export function createHandler({
         res.end(f.bytes);
         return;
       }
-      if (
-        (path === "scan-invoice" || path === "scan-report") &&
-        method === "POST"
-      ) {
-        const body = await jsonBody(req);
-        v.object(body, ["jobId", "attachmentIds"]);
-        const job = await scanner.scan(
-          { ...body, purpose: path === "scan-invoice" ? "invoice" : "report" },
-          user.uid,
-        );
-        send(200, job);
-        return;
-      }
-      const jobMatch = path.match(/^scan-jobs\/([a-zA-Z0-9_-]+)$/);
-      if (jobMatch && method === "GET") {
-        v.id(jobMatch[1]);
-        const job = await store.get("scanJobs/" + jobMatch[1]);
-        if (!job) fail(404, "NOT_FOUND", "הסריקה לא נמצאה.");
-        send(200, {
-          ...job,
-          status:
-            job.status === "running" && job.expiresAt < Date.now()
-              ? "failed"
-              : job.status,
-        });
-        return;
-      }
       if (path === "reports/summary" && method === "GET") {
         const f = v.filters(url.searchParams),
           suppliers = await accounting.all("suppliers");
@@ -332,37 +297,6 @@ export function createHandler({
             v.filterInvoices(await accounting.all("invoices"), f, suppliers),
           ),
         );
-        return;
-      }
-      if (path === "reconcile" && method === "POST") {
-        const body = await jsonBody(req);
-        v.object(body, ["jobId", "from", "to"]);
-        v.id(body.jobId);
-        v.date(body.from);
-        v.date(body.to);
-        if (body.from > body.to)
-          fail(400, "INVALID_DATE", "טווח התאריכים אינו תקין.");
-        const job = await store.get("scanJobs/" + body.jobId);
-        if (job?.purpose !== "report" || job.status !== "completed")
-          fail(400, "REPORT_MISSING", "יש לסרוק דוח להשוואה תחילה.");
-        const invoices = v.filterInvoices(
-            await accounting.all("invoices"),
-            body,
-          ),
-          suppliers = await accounting.all("suppliers");
-        send(200, {
-          ...reconcile(
-            job.result.rows.filter(
-              (r) =>
-                !r.invoiceDate ||
-                (r.invoiceDate >= body.from && r.invoiceDate <= body.to),
-            ),
-            invoices,
-            suppliers,
-          ),
-          warnings: job.result.warnings,
-          needsReview: job.result.needsReview,
-        });
         return;
       }
       if (path === "backup" && method === "GET") {
@@ -395,7 +329,6 @@ export function createHandler({
         method: req.method,
         status: res.statusCode,
         durationMs: Date.now() - start,
-        model: route.includes("scan") ? config.model : undefined,
         errorCategory: category,
         ...diagnostic,
       });

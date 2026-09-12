@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { AccountingService } from "../src/invoices.js";
 import * as v from "../src/validation.js";
 import { MemoryStore, inv } from "./helpers.js";
-import { reconcile } from "../src/reconciliation.js";
 const uid = "owner-unit-test";
 async function fixture() {
   const store = new MemoryStore(),
@@ -275,31 +274,5 @@ test("review is required and no unverified supplier or privileged fields can ent
       uid,
     ),
     (e) => e.code === "SUPPLIER_MISSING",
-  );
-});
-test("accountant comparison is one-to-one, cautious and does not mutate inputs", () => {
-  const rows = [
-    {
-      supplierName: "בדיקה",
-      documentNumber: "1001",
-      invoiceDate: "2026-09-10",
-      totalAgorot: 11800,
-      vatAgorot: 1800,
-      needsReview: false,
-    },
-  ];
-  const invoices = [{ ...inv(), id: "invoice-001", status: "unpaid" }],
-    before = structuredClone(invoices);
-  const r = reconcile([...rows, ...rows], invoices, [
-    { id: "supplier-001", name: "בדיקה" },
-  ]);
-  assert.equal(r.matchedCount, 1);
-  assert.equal(r.results[1].status, "needsReview");
-  assert.deepEqual(invoices, before);
-  assert.equal(
-    reconcile([{ ...rows[0], vatAgorot: null }], invoices, [
-      { id: "supplier-001", name: "בדיקה" },
-    ]).matchedCount,
-    0,
   );
 });

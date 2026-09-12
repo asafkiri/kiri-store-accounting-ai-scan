@@ -28,20 +28,14 @@ const supplier = (name, active = true) => ({
   notes: "",
 });
 
-test("reviewed scan atomically creates supplier and invoice with audit metadata and sync changes", async () => {
+test("a reviewed invoice atomically creates its supplier with audit metadata and sync changes", async () => {
   const { store, service } = setup();
-  await store.transaction(async (tx) =>
-    tx.set("scanJobs/scan-job-001", {
-      status: "completed",
-      purpose: "invoice",
-    }),
-  );
-  const input = invoice("מרינה", { source: "ai", scanJobId: "scan-job-001" });
+  const input = invoice("מרינה");
   const result = await service.saveInvoice("invoice-new-001", input, uid);
   const created = await store.get("suppliers/supplier-new-001");
   assert.equal(created.name, "מרינה");
   assert.equal(created.active, true);
-  assert.equal(created.createdFrom, "scan");
+  assert.equal(created.createdFrom, "manual");
   assert.equal(created.version, 1);
   assert.equal(created.createdBy, uid);
   assert.ok(created.createdAt);
@@ -85,7 +79,6 @@ test("failed review or missing attachment leaves neither supplier nor invoice", 
   const { service } = setup();
   for (const extra of [
     { reviewConfirmed: false },
-    { source: "ai", scanJobId: "missing-scan" },
     { attachmentIds: ["missing-document"] },
   ]) {
     await assert.rejects(
@@ -252,55 +245,6 @@ test("standalone supplier creation, rename and reactivation also enforce normali
   );
 });
 
-test("an invoice binds the printed identifier to the supplier it already names", async () => {
-  const { store, service } = setup();
-  await service.saveSupplier(
-    "supplier-tnuva",
-    body({ name: "תנובה קפואים", notes: "", contact: "", active: true }),
-    uid,
-  );
-  // The first invoice reaches this supplier by name and leaves its number behind.
-  await service.saveInvoice(
-    randomUUID(),
-    body({
-      ...inv(),
-      supplierId: "supplier-tnuva",
-      bindTaxIds: ["783034218"],
-    }),
-    uid,
-  );
-  assert.deepEqual(
-    (await store.get("suppliers/supplier-tnuva")).taxIds,
-    ["783034218"],
-  );
-  // A group prints several of its companies, and binding is additive.
-  await service.saveInvoice(
-    randomUUID(),
-    body({
-      ...inv(),
-      documentNumber: "1002",
-      supplierId: "supplier-tnuva",
-      bindTaxIds: ["783034218", "570000745"],
-    }),
-    uid,
-  );
-  const merged = await store.get("suppliers/supplier-tnuva");
-  assert.deepEqual(merged.taxIds, ["783034218", "570000745"]);
-  // Re-sending what the record already holds writes nothing.
-  const before = merged.version;
-  await service.saveInvoice(
-    randomUUID(),
-    body({
-      ...inv(),
-      documentNumber: "1003",
-      supplierId: "supplier-tnuva",
-      bindTaxIds: ["783034218"],
-    }),
-    uid,
-  );
-  assert.equal((await store.get("suppliers/supplier-tnuva")).version, before);
-});
-
 test("editing a supplier never silently drops the identifiers it is matched by", async () => {
   const { store, service } = setup();
   await service.saveSupplier(
@@ -338,20 +282,3 @@ test("editing a supplier never silently drops the identifiers it is matched by",
   assert.deepEqual((await store.get("suppliers/supplier-globus")).taxIds, []);
 });
 
-test("a misread identifier is refused rather than bound", async () => {
-  const { store, service } = setup();
-  await service.saveSupplier(
-    "supplier-ice",
-    body({ name: "Mr. ICE", notes: "", contact: "", active: true }),
-    uid,
-  );
-  await assert.rejects(
-    service.saveInvoice(
-      randomUUID(),
-      body({ ...inv(), supplierId: "supplier-ice", bindTaxIds: ["89991651"] }),
-      uid,
-    ),
-    (e) => e.code === "INVALID_TAX_ID",
-  );
-  assert.equal((await store.get("suppliers/supplier-ice")).taxIds, undefined);
-});
