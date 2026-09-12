@@ -31,9 +31,12 @@ export function configFromEnv(env = process.env) {
   )
     throw new Error("ALLOWED_PHONE_NUMBER must be E.164");
   // How long an invoice photo is kept before the service deletes it from
-  // Firestore and from Storage. 0 keeps every photo until it is deleted by
-  // hand. Bookkeeping rules may require a longer period than the default.
-  const retention = String(env.DOCUMENT_RETENTION_DAYS ?? "").trim() || "365";
+  // Firestore and from Storage. The default covers the seven years that
+  // bookkeeping rules count from the END of the tax year, which is close to
+  // eight years from the day the photo was taken. 0 keeps every photo until
+  // it is deleted by hand. Storage for a family store is a few shekels a
+  // year, so the period is a documentation decision, not a cost one.
+  const retention = String(env.DOCUMENT_RETENTION_DAYS ?? "").trim() || "2920";
   if (!/^\d{1,4}$/.test(retention) || Number(retention) > 3650)
     throw new Error(
       "DOCUMENT_RETENTION_DAYS must be a whole number of days, 0-3650 (0 disables the purge)",

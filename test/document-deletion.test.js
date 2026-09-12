@@ -374,9 +374,9 @@ test("a purge that cannot finish leaves the invoice able to open its photo", asy
 
 test("the retention setting is read from the environment and refuses nonsense", async () => {
   const { configFromEnv } = await import("../src/config.js");
-  assert.equal(configFromEnv({}).documentRetentionDays, 365);
-  assert.equal(configFromEnv({ DOCUMENT_RETENTION_DAYS: "" }).documentRetentionDays, 365);
-  assert.equal(configFromEnv({ DOCUMENT_RETENTION_DAYS: " 2555 " }).documentRetentionDays, 2555);
+  assert.equal(configFromEnv({}).documentRetentionDays, 2920, "the default covers seven years counted from the end of the tax year");
+  assert.equal(configFromEnv({ DOCUMENT_RETENTION_DAYS: "" }).documentRetentionDays, 2920);
+  assert.equal(configFromEnv({ DOCUMENT_RETENTION_DAYS: " 365 " }).documentRetentionDays, 365);
   assert.equal(configFromEnv({ DOCUMENT_RETENTION_DAYS: "0" }).documentRetentionDays, 0);
   for (const value of ["-1", "365.5", "4000", "לא", "365d"])
     assert.throws(() => configFromEnv({ DOCUMENT_RETENTION_DAYS: value }), /DOCUMENT_RETENTION_DAYS/, value);
