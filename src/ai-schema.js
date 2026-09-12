@@ -175,6 +175,24 @@ export function hasExplicitZeroVat(evidence = "") {
   );
   return exempt.test(evidence) || zero.test(evidence);
 }
+// A note costs the person approving the invoice a step, and the only answers
+// that screen has are to correct one of the extracted fields or to photograph
+// the document again. A note about numbers this system never stores — the
+// customer's own references, an order or allocation number, an address, the
+// item lines — leaves nothing to do, and "verify the identifiers by hand" is
+// not even the reader's job: which company number belongs to the issuer is
+// decided here against the store's own number, never by whoever reads the note.
+// Dropping those is deliberately one-sided: a note that also names a field, an
+// amount, the document type or the photograph itself is kept, and so is a note
+// whose subject we do not recognise at all.
+const reviewableSubject =
+  /ספק|מנפיק|מספר\s+(?:ה)?(?:חשבונית|מסמך|תעודה)|מס['׳]\s*(?:ה)?(?:חשבונית|מסמך|תעודה)|תאריך|סכום|סה[״"'׳]?כ|מע[״"'׳]?מ|תשלום|זיכוי|הנח|הפחת|עיגול|ניכוי|סוג\s+(?:ה)?מסמך|תעודת\s+משלוח|קבלה|עמוד|דף|צילום|לצלם|סריקה|לסרוק|תמונה|בנפרד/u;
+const unstoredSubject =
+  /מזה[הים]|זיהוי|לקוח|כתובת|טלפון|הזמנ[הת]|אסמכתא|הקצאה|ברקוד|מק[״"'׳.]ט|פריט|מוצר|ח[.'׳״"]\s*פ|(?<![מב])ע[.'׳״"]\s*מ|עוסק\s+(?:מורשה|פטור)/u;
+export function reviewableWarning(text) {
+  const note = String(text || "");
+  return reviewableSubject.test(note) || !unstoredSubject.test(note);
+}
 const roundingLabel = /(?:עיגול|\brounding\b)/iu;
 // A rounding allowance must come from its own printed line and exact signed
 // amount. A label alone, an unrelated excerpt, or a balancing guess is not proof.
@@ -198,6 +216,14 @@ export function validateInvoiceExtraction(raw) {
     );
   const result = structuredClone(raw),
     uncertain = new Set(raw.uncertainFields);
+  // Only the model's own notes are filtered, and only before this function adds
+  // its own: a note derived here from the numbers is always worth a step.
+  result.warnings = result.warnings
+    .map((note) => note.trim())
+    .filter(
+      (note, i, all) =>
+        note && reviewableWarning(note) && all.indexOf(note) === i,
+    );
   if (!result.documentType) uncertain.add("documentType");
   for (const key of fields) {
     // An explicit printed excerpt is required for every populated field, particularly zero VAT.
