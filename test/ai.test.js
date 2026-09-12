@@ -83,7 +83,8 @@ test("multi-page Osem response passes through the request validator with the new
   );
   // The supplier is resolved here, against the store's own number, so the app
   // receives the answer rather than the configuration it would need to repeat.
-  assert.deepEqual(result, { ...expected, supplierTaxIds: ["511091753"], groupTaxIds: [] });
+  assert.deepEqual(result, { ...expected, readings: 2, supplierTaxIds: ["511091753"], groupTaxIds: [] },
+    "readings that agree leave the extraction exactly as it was read");
   assert.equal(sent.input[0].content.filter(c => c.type === "input_image").length, 3);
   assert.match(sent.instructions, /Ignore running customer balance lines/);
   assert.match(sent.instructions, /יתרת לקוח ללא חשבונית זו/);
@@ -194,7 +195,7 @@ test("OpenAI request: exact Luna only, structured schema, no storage, and zero r
     config,
     f,
   );
-  assert.equal(calls, 1);
+  assert.equal(calls, config.readingsPerScan, "one call per reading, and no retry");
   assert.equal(body.model, "gpt-5.6-luna");
   assert.equal(body.store, false);
   assert.equal(body.text.format.strict, true);
@@ -211,7 +212,7 @@ test("OpenAI request: exact Luna only, structured schema, no storage, and zero r
     }),
     (e) => e.code === "AI_TIMEOUT",
   );
-  assert.equal(calls, 1);
+  assert.equal(calls, config.readingsPerScan, "a failed reading is never retried");
   const incomplete = async () => ({
     ok: true,
     json: async () => ({ status: "incomplete", output: [] }),
@@ -499,5 +500,79 @@ test("normalization keeps white transparency and rejects decompression bombs", a
       { name: "huge.jpg", mime: "image/jpeg", data: huge.toString("base64") },
     ]),
     (e) => e.code === "INVALID_FILE",
+  );
+});
+
+const luna = (values) => {
+  let call = 0;
+  return async () => {
+    const value = values[Math.min(call++, values.length - 1)];
+    if (value instanceof Error) throw value;
+    return {
+      ok: true,
+      json: async () => ({
+        status: "completed",
+        output: [{ content: [{ type: "output_text", text: JSON.stringify(value) }] }],
+      }),
+    };
+  };
+};
+const pdf = [{ mime: "application/pdf", bytes: Buffer.from("%PDF-") }];
+test("two readings of one photograph: what they agree on stays, what they dispute is asked", async () => {
+  const first = aiResult(), second = aiResult();
+  // The same printed number, read twice, differently.
+  second.documentNumber = "1234";
+  second.evidence.documentNumber = "חשבונית 1234";
+  const result = await callLuna(pdf, "invoice", config, luna([first, second]));
+  assert.equal(result.readings, 2);
+  assert.equal(result.documentNumber, null, "neither reading is presented as the printed one");
+  assert.equal(result.evidence.documentNumber, null, "no excerpt stands behind an emptied field");
+  assert.ok(result.uncertainFields.includes("documentNumber"));
+  assert.equal(result.needsReview, true);
+  assert.equal(result.totalAgorot, 11800, "a figure both readings reached is kept");
+  assert.equal(result.invoiceDate, "2026-09-10");
+});
+test("the same supplier written two ways is not a disagreement; a different one is", async () => {
+  const first = aiResult(), second = aiResult();
+  second.supplierName = 'ספק בדיקה בע"מ';
+  const same = await callLuna(pdf, "invoice", config, luna([first, second]));
+  assert.equal(same.supplierName, "ספק בדיקה", "a legal suffix is the same business");
+  assert.ok(!same.uncertainFields.includes("supplierName"));
+  const other = aiResult();
+  other.supplierName = "ספק אחר";
+  const differs = await callLuna(pdf, "invoice", config, luna([aiResult(), other]));
+  assert.equal(differs.supplierName, null);
+  assert.ok(differs.uncertainFields.includes("supplierName"));
+});
+test("disputed deductions keep the lines that were read and ask about each one", async () => {
+  const first = aiResult(), second = aiResult();
+  const line = { label: "הנחה", amountAgorot: 500, includedInTotal: true, evidence: "הנחה 5.00" };
+  first.deductions = [line];
+  second.deductions = [{ ...line, amountAgorot: 900, evidence: "הנחה 9.00" }];
+  const result = await callLuna(pdf, "invoice", config, luna([first, second]));
+  assert.deepEqual(result.deductions, first.deductions, "a discount is never dropped in silence");
+  assert.ok(result.uncertainFields.includes("deductions"));
+  assert.equal(result.needsReview, true);
+});
+test("a reading that fails is not the scan failing; only no reading at all is", async () => {
+  const alone = await callLuna(pdf, "invoice", config, luna([Error("offline"), aiResult()]));
+  assert.equal(alone.readings, 1, "the reading that answered is used");
+  assert.equal(alone.documentNumber, "123");
+  await assert.rejects(
+    callLuna(pdf, "invoice", config, luna([Error("offline")])),
+    (e) => e.code === "AI_TIMEOUT",
+  );
+});
+test("notes and identifiers from both readings are merged without repeating or guessing", async () => {
+  const first = aiResult(), second = aiResult();
+  first.warnings = ["הצילום אינו ברור."];
+  second.warnings = ["הצילום אינו ברור.", "חלק מהמסמך חתוך בצילום."];
+  second.identifiers = [first.identifiers[0]];
+  const result = await callLuna(pdf, "invoice", config, luna([first, second]));
+  assert.deepEqual(result.warnings, ["הצילום אינו ברור.", "חלק מהמסמך חתוך בצילום."]);
+  assert.deepEqual(
+    result.identifiers.map((i) => i.value),
+    [first.identifiers[0].value],
+    "only an identifier both readings saw survives",
   );
 });

@@ -67,6 +67,7 @@ export const config = {
   model: "gpt-5.6-luna",
   openaiKey: "unit-test-only",
   storeTaxId: "069991651",
+  readingsPerScan: 2,
   dailyScanLimit: 30,
   monthlyScanLimit: 300,
 };
