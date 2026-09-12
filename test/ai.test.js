@@ -100,6 +100,8 @@ test("multi-page Osem response passes through the request validator with the new
   assert.match(sent.instructions, /percentage rather than shekels/);
   assert.match(sent.instructions, /is a disclosure, not a deduction/);
   assert.match(sent.instructions, /דף X מתוך Y/);
+  assert.match(sent.instructions, /only what the reader can answer/);
+  assert.match(sent.instructions, /which printed company number belongs to whom/);
 });
 test("valid structured JSON preserved; absent VAT remains null and needsReview", () => {
   assert.deepEqual(validateInvoiceExtraction(aiResult()), aiResult());
@@ -125,6 +127,31 @@ test("VAT zero needs explicit evidence; arithmetic mismatch never repairs printe
   assert.equal(b.totalAgorot, 11800);
   assert.equal(b.needsReview, true);
   assert.ok(b.warnings.length);
+});
+test("notes about numbers the review cannot correct are dropped; anything else survives", () => {
+  const a = aiResult();
+  a.warnings = [
+    "יש לאמת ידנית את שיוך מספרי הלקוח ואת כל המזהים הנוספים המודפסים במסמך, שחלקם אינם קריאים לחלוטין.",
+    "כתובת הלקוח ומספר ההזמנה אינם קריאים.",
+    "  הצילום אינו ברור.  ",
+    "הצילום אינו ברור.",
+    "ח.פ של הספק אינו קריא במלואו.",
+    "המסמך אינו קריא כלל.",
+    "   ",
+  ];
+  const kept = validateInvoiceExtraction(a).warnings;
+  assert.deepEqual(kept, [
+    "הצילום אינו ברור.",
+    "ח.פ של הספק אינו קריא במלואו.",
+    "המסמך אינו קריא כלל.",
+  ], "a note naming a field, the photograph or nothing we recognise is kept");
+  // A note this file derives from the numbers is never filtered away with them.
+  const b = aiResult();
+  b.warnings = ["יש לוודא ידנית את מספר ההזמנה המודפס במסמך."];
+  b.vatAgorot = 1750;
+  const derived = validateInvoiceExtraction(b).warnings;
+  assert.equal(derived.length, 1);
+  assert.match(derived[0], /אינו שווה לסכום הכולל/);
 });
 test("AI wrong types/unknown keys, invalid dates and source-less fields are rejected or flagged", () => {
   assert.throws(() =>
