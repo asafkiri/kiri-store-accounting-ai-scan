@@ -10,13 +10,18 @@ export const hash = (value) =>
         : JSON.stringify(value),
     )
     .digest("hex");
-const claimKey = (i) =>
-  "invoiceKeys/" +
-  hash([
-    i.supplierId,
-    i.documentType,
-    i.documentNumber.normalize("NFKC").replace(/\s/g, "").toLowerCase(),
-  ]);
+// An invoice typed without its number cannot be told apart from the next one
+// from the same supplier, so it claims no number and blocks none: the guard
+// against entering the same invoice twice applies wherever a number was typed.
+const claimKey = (i) => {
+  const number = (i.documentNumber || "")
+    .normalize("NFKC")
+    .replace(/\s/g, "")
+    .toLowerCase();
+  return number
+    ? "invoiceKeys/" + hash([i.supplierId, i.documentType, number])
+    : null;
+};
 export class AccountingService {
   constructor(store, now = () => Date.now()) {
     this.store = store;

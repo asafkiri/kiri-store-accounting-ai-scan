@@ -121,7 +121,10 @@ export function invoice(v) {
     fail(400, "REVIEW_REQUIRED", "יש לבדוק ולאשר את החשבונית לפני השמירה.");
   const result = {
     supplierId: id(v.supplierId),
-    documentNumber: str(v.documentNumber, 100, true),
+    // Optional: the number is printed on the paper and on its photograph, and
+    // typing it is the slowest question of the intake. An invoice saved without
+    // it claims no number, so it neither blocks nor is blocked by another.
+    documentNumber: str(v.documentNumber, 100),
     invoiceDate: date(v.invoiceDate),
     documentType: oneOf(v.documentType, [
       "invoice",
