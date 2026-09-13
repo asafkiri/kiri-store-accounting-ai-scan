@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fail } from "./errors.js";
 import { documentPath } from "./files.js";
+import { restorable, restoreDeadline } from "./recycle.js";
 export const DAY = 24 * 60 * 60 * 1000;
 export const PURGE_LOCK = "system/documentPurge";
 // Transaction reads return native Firestore values; list/get outside one are
@@ -12,11 +13,8 @@ const millis = (value) =>
       ? value.toMillis()
       : null;
 
-// Deleting a photo means deleting the bytes, not hiding a row. The order is
-// always: every invoice releases the file, then the record is marked, then the
-// object is removed, then the record. An interrupted deletion therefore never
-// leaves an invoice pointing at a file it cannot open, and whatever is left
-// behind is picked up by the next sweep.
+// User deletion first moves a link into the 30-day recycle bin. Physical
+// cleanup only runs after every active/recoverable reference has been released.
 export class DocumentLifecycle {
   constructor({
     store,
@@ -75,6 +73,8 @@ export class DocumentLifecycle {
       if (!record) return { gone: true };
       const used = await tx.query("invoices", "attachmentIds", documentId, 1);
       if (used.length) return { inUse: used[0].id };
+      const recycled = await tx.query("invoices", "trashedAttachmentIds", documentId, 1);
+      if (recycled.length) return { inUse: recycled[0].id };
       tx.set(key, { ...record, purgingAt: tx.stamp(), purgingBy: uid });
       return { path: documentPath(documentId, record) };
     });
@@ -92,18 +92,49 @@ export class DocumentLifecycle {
     return deleted ? { deleted: true } : { replaced: true };
   }
   async deleteInvoiceDocument(invoiceId, documentId, body, uid) {
-    const result = await this.accounting.detachAttachment(
+    const result = await this.accounting.recycleAttachment(
       invoiceId,
       documentId,
       body,
       uid,
     );
-    const file = await this.removeFile(documentId, uid);
     return {
       ...result,
-      fileDeleted: Boolean(file.deleted || file.gone),
-      stillUsedBy: file.inUse || null,
+      recycled: true,
+      fileDeleted: false,
+      restoreUntil: result.record.attachmentTrash?.find(p => p.id === documentId)?.restoreUntil || null,
     };
+  }
+  async protectedByRecycle(id) {
+    const [attached, recycled] = await Promise.all([
+      this.store.query("invoices", "attachmentIds", id, 250),
+      this.store.query("invoices", "trashedAttachmentIds", id, 250),
+    ]);
+    return attached.some(i => restorable(i, this.now())) || recycled.some(i =>
+      i.attachmentTrash?.some(p => p.id === id && this.now() < p.restoreUntil));
+  }
+  async purgeRecycle(limit) {
+    const deleted = [], retained = [];
+    let released = 0;
+    for (let invoice of await this.accounting.all("invoices")) {
+      const expiredIds = invoice.deletedAt && this.now() >= restoreDeadline(invoice)
+        ? [...(invoice.attachmentIds || [])] : [];
+      const trashIds = (invoice.attachmentTrash || []).filter(p => this.now() >= p.restoreUntil).map(p => p.id);
+      for (const id of [...new Set([...expiredIds, ...trashIds])]) {
+        if (released >= limit) return { deleted, retained, released };
+        try {
+          const body = { expectedVersion: invoice.version, mutationId: randomUUID() };
+          const result = expiredIds.includes(id)
+            ? await this.accounting.detachAttachment(invoice.id, id, body, "recycle-purge")
+            : await this.accounting.recycleAttachment(invoice.id, id, body, "recycle-purge", "expire-attachment");
+          invoice = result.record;
+          released++;
+          const file = await this.removeFile(id, "recycle-purge");
+          if (file.deleted || file.gone) deleted.push(id);
+        } catch (error) { retained.push({ id, reason: error.code || "ERROR" }); break; }
+      }
+    }
+    return { deleted, retained, released };
   }
   // Age is counted from the last upload of these exact bytes, so a photo
   // attached to a second invoice is kept for a year from that day too.
@@ -117,7 +148,7 @@ export class DocumentLifecycle {
       const page = await this.store.list("documents", after, 250);
       for (const record of page) {
         const stamp = this.expiredAt(record);
-        if (stamp !== null && stamp <= cutoff) found.push(record);
+        if (record.purgingAt || (stamp !== null && stamp <= cutoff)) found.push(record);
       }
       if (page.length < 250 || found.length >= limit) break;
       after = page.at(-1).id;
@@ -125,15 +156,14 @@ export class DocumentLifecycle {
     return found;
   }
   async purgeExpired({ uid = "document-purge", limit = this.batch } = {}) {
-    if (!this.retentionDays)
-      return { disabled: true, deleted: [], retained: [], released: 0 };
-    const cutoff = this.now() - this.retentionDays * DAY;
+    const recycle = await this.purgeRecycle(limit);
+    const cutoff = this.retentionDays ? this.now() - this.retentionDays * DAY : -Infinity;
     const found = await this.expired(cutoff, limit);
-    const deleted = [],
-      retained = [];
-    let released = 0;
+    const deleted = recycle.deleted, retained = recycle.retained;
+    let released = recycle.released;
     for (const record of found.slice(0, limit)) {
       try {
+        if (await this.protectedByRecycle(record.id)) { retained.push({ id: record.id, reason: "recycle-bin" }); continue; }
         released += await this.releaseEverywhere(record.id, uid);
         const file = await this.removeFile(record.id, uid);
         if (file.deleted || file.gone) deleted.push(record.id);
@@ -145,7 +175,8 @@ export class DocumentLifecycle {
       }
     }
     return {
-      cutoff,
+      cutoff: Number.isFinite(cutoff) ? cutoff : null,
+      disabled: !this.retentionDays,
       deleted,
       retained,
       released,
@@ -156,7 +187,7 @@ export class DocumentLifecycle {
   // authorized traffic the store already makes, at most once per interval
   // across every instance, and it runs after the answer was sent.
   async maybePurge() {
-    if (!this.retentionDays || this.running) return null;
+    if (this.running) return null;
     // Sync runs on every screen. A throttled sweep costs this instance
     // nothing, and at most one cheap read once the instance is new.
     if (this.checkedAt !== null && this.now() - this.checkedAt < this.intervalMs)

@@ -91,8 +91,8 @@ export function firebaseServices(config) {
       },
       get: async (key) =>
         (await getStorage(app).bucket().file(key).download())[0],
-      // A file the store removed is gone for good: no versioning, no recycle
-      // bin, and a second attempt after a partial deletion still succeeds.
+      // Final cleanup after the recycle window/reference checks. A retry after
+      // a partial physical deletion still succeeds.
       delete: async (key) => {
         await getStorage(app)
           .bucket()
