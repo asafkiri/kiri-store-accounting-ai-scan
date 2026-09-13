@@ -153,6 +153,20 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     ).status,
     200,
   );
+  const cashDeletion = { expectedVersion: 1, mutationId: randomUUID() };
+  const deletedCash = await api("daily-cash/2026-09-10", cashDeletion, "DELETE");
+  assert.equal(deletedCash.status, 200, await deletedCash.clone().text());
+  assert.ok((await raw("dailyCash/2026-09-10")).deletedAt instanceof Timestamp);
+  assert.equal((await (await api("daily-cash/2026-09-10", cashDeletion, "DELETE")).json()).replayed, true);
+  const reenteredCash = await api("daily-cash/2026-09-10/restore", {
+    expectedVersion: 2, mutationId: randomUUID(),
+    data: { date: "2026-09-10", cashAgorot: 0, ravKavAgorot: null, notes: "" },
+  }, "POST");
+  assert.equal(reenteredCash.status, 200, await reenteredCash.clone().text());
+  const freshCash = (await reenteredCash.json()).record;
+  assert.equal(freshCash.deletedAt, null);
+  assert.equal(freshCash.ravKavAgorot, null);
+  assert.equal(freshCash.cashAgorot, 0);
   const png = await sharp({
     create: { width: 24, height: 24, channels: 3, background: "#fff" },
   })
@@ -218,7 +232,9 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   await api("invoices/invoice-twin", { expectedVersion: 1, mutationId: randomUUID() }, "DELETE");
   const snapshot = await (await api("sync")).json();
   assert.equal(snapshot.invoices.length, 2);
-  assert.equal(snapshot.dailyCash[0].ravKavAgorot, 6789);
+  assert.equal(snapshot.dailyCash[0].ravKavAgorot, null);
+  assert.equal(snapshot.dailyCash[0].cashAgorot, 0);
+  assert.equal(snapshot.dailyCash[0].deletedAt, null);
   const inlineBody = {
     expectedVersion: 0,
     mutationId: randomUUID(),

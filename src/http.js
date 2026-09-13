@@ -190,6 +190,11 @@ export function createHandler({
         send(200, await accounting.restoreSupplier(supplierRestore[1], await jsonBody(req), user.uid));
         return;
       }
+      const cashRestore = path.match(/^daily-cash\/([a-zA-Z0-9_-]+)\/restore$/);
+      if (cashRestore && method === "POST") {
+        send(200, await accounting.saveCash(cashRestore[1], await jsonBody(req), user.uid, true));
+        return;
+      }
       const entityMatch = path.match(
         /^(suppliers|invoices|daily-cash)(?:\/([a-zA-Z0-9_-]+))?$/,
       );
@@ -241,6 +246,10 @@ export function createHandler({
         }
         if (method === "DELETE" && entity === "suppliers" && entityId) {
           send(200, await accounting.deleteSupplier(entityId, await jsonBody(req), user.uid));
+          return;
+        }
+        if (method === "DELETE" && entity === "daily-cash" && entityId) {
+          send(200, await accounting.deleteCash(entityId, await jsonBody(req), user.uid));
           return;
         }
         if (method === "DELETE" && entity === "invoices" && entityId) {
