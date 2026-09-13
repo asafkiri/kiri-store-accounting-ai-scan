@@ -333,7 +333,7 @@ test("supplier restoration and VAT settings use authorized versioned endpoints a
   assert.equal((await (await request("/api/v1/sync")).json()).settings[0].defaultVatBasisPoints, 1700);
 });
 
-test("photo deletion over HTTP needs the authorized user and really removes the file", async t => {
+test("photo recycling and restoration over HTTP require authorization and keep the file recoverable", async t => {
   const { request, store } = await setup(t);
   const png = await sharp({ create: { width: 16, height: 16, channels: 3, background: "#fff" } }).png().toBuffer();
   await request("/api/v1/suppliers/supplier-001", { method: "PUT", body: JSON.stringify({ expectedVersion: 0, mutationId: randomUUID(), data: { name: "ספק לצילום", active: true, notes: "", contact: "" } }) });
@@ -351,11 +351,36 @@ test("photo deletion over HTTP needs the authorized user and really removes the 
   const response = await request(path, options);
   assert.equal(response.status, 200, await response.clone().text());
   const result = await response.json();
-  assert.equal(result.fileDeleted, true);
+  assert.equal(result.fileDeleted, false);
   assert.deepEqual(result.record.attachmentIds, []);
-  assert.equal(await store.get("documents/" + documentId), null);
-  assert.equal((await request("/api/v1/documents/" + documentId)).status, 404);
+  assert.ok(await store.get("documents/" + documentId));
+  assert.equal((await request("/api/v1/documents/" + documentId)).status, 200);
   assert.equal((await request("/api/v1/invoices/invoice-photo/documents/" + documentId, { method: "DELETE", body: JSON.stringify({ expectedVersion: result.record.version, mutationId: randomUUID() }) })).status, 404);
+  const restore = { method: "POST", body: JSON.stringify({ expectedVersion: result.record.version, mutationId: randomUUID() }) };
+  assert.equal((await request(path + "/restore", { ...restore, headers: { Authorization: "" } })).status, 401);
+  const restored = await request(path + "/restore", restore);
+  assert.equal(restored.status, 200, await restored.clone().text());
+  assert.deepEqual((await restored.json()).record.attachmentIds, [documentId]);
+});
+
+test("batch payment HTTP endpoint rejects unauthorized writes and synchronizes all selected invoices", async t => {
+  const { request, store } = await setup(t);
+  await request("/api/v1/suppliers/supplier-001", { method: "PUT", body: JSON.stringify({ expectedVersion: 0, mutationId: randomUUID(), data: { name: "ספק לתשלום", active: true, notes: "", contact: "" } }) });
+  for (const [index, id] of ["batch-http-01", "batch-http-02"].entries()) {
+    const response = await request("/api/v1/invoices/" + id, { method: "PUT", body: JSON.stringify({ expectedVersion: 0, mutationId: randomUUID(), data: { ...inv(), documentNumber: "HTTP-BATCH-" + index, invoiceDate: `2026-09-${10 + index}` } }) });
+    assert.equal(response.status, 200, await response.clone().text());
+  }
+  const before = (await store.get("system/dataVersion")).version;
+  const path = "/api/v1/invoices/batch-http-01/pay-batch";
+  const options = { method: "POST", body: JSON.stringify({ expectedVersion: 1, mutationId: randomUUID(), items: ["batch-http-01", "batch-http-02"].map(id => ({ id, expectedVersion: 1 })), totalAgorot: 23600,
+    payment: { method: "check", paymentDate: "2026-09-13", checkNumber: "00123", checkDueDate: null, notes: "" } }) };
+  assert.equal((await request(path, { ...options, headers: { Authorization: "" } })).status, 401);
+  assert.equal((await request(path, { ...options, headers: { Authorization: "Bearer valid-other-token" } })).status, 403);
+  const response = await request(path, options);
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal((await response.json()).relatedRecords.length, 1);
+  const sync = await (await request("/api/v1/sync?since=" + before)).json();
+  assert.equal(sync.invoices.length, 2); assert.ok(sync.invoices.every(i => i.status === "paid" && i.payment.checkNumber === "00123"));
 });
 
 test("sync reports the retention period and sweeps expired photos after answering", async t => {

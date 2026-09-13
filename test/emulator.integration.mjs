@@ -377,19 +377,24 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   assert.equal(held.status, 200, await held.clone().text());
   const heldResult = await held.json();
   assert.equal(heldResult.fileDeleted, false);
-  assert.equal(heldResult.stillUsedBy, "invoice-shared-photo");
+  assert.equal(heldResult.recycled, true);
   assert.equal(await objectExists(stored.storagePath), true);
   // Backdating the upload is what a year in the store looks like to the sweep.
   await rawRoot
     .collection("documents")
     .doc(doc.id)
     .update({ uploadedAt: Date.now() - 400 * 24 * 60 * 60 * 1000 });
+  const protectedPurge = await api("documents/purge", null, "POST");
+  assert.deepEqual((await protectedPurge.json()).deleted, [], "a recycled file keeps its full recovery window");
+  const restoredPhoto = await api(linkPath + "/restore", { expectedVersion: heldResult.record.version, mutationId: randomUUID() }, "POST");
+  assert.equal(restoredPhoto.status, 200, await restoredPhoto.clone().text());
+  assert.deepEqual((await restoredPhoto.json()).record.attachmentIds, [doc.id]);
   const purged = await api("documents/purge", null, "POST");
   assert.equal(purged.status, 200, await purged.clone().text());
   const summary = await purged.json();
   assert.equal(summary.retentionDays, 365);
   assert.deepEqual(summary.deleted, [doc.id]);
-  assert.equal(summary.released, 1, "the sharing invoice had to release it");
+  assert.equal(summary.released, 2, "both restored and sharing invoices had to release it");
   assert.equal(await raw("documents/" + doc.id), undefined);
   assert.equal(await objectExists(stored.storagePath), false);
   assert.equal((await api("documents/" + doc.id)).status, 404);
@@ -407,4 +412,27 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   assert.equal(again.status, 200, await again.clone().text());
   assert.equal((await again.json()).documents[0].id, doc.id);
   assert.equal((await api("documents/" + doc.id)).status, 200);
+  // Real Firestore: competing requests share one atomic multi-invoice receipt.
+  const batchIds = ["invoice-batch-01", "invoice-batch-02"];
+  for (const [index, id] of batchIds.entries()) {
+    const saved = await api("invoices/" + id, { expectedVersion: 0, mutationId: randomUUID(), data: {
+      ...inv(), documentNumber: "BATCH-" + index, invoiceDate: "2026-09-20", totalAgorot: 20000 + index, finalAgorot: 20000 + index,
+    } });
+    assert.equal(saved.status, 200, await saved.clone().text());
+  }
+  const batchBody = { expectedVersion: 1, mutationId: randomUUID(), items: batchIds.map(id => ({ id, expectedVersion: 1 })), totalAgorot: 40001,
+    payment: { method: "check", paymentDate: "2026-09-21", checkNumber: "000777", checkDueDate: "2026-10-01", notes: "" } };
+  const batchReplies = await Promise.all([api("invoices/" + batchIds[0] + "/pay-batch", batchBody, "POST"), api("invoices/" + batchIds[0] + "/pay-batch", batchBody, "POST")]);
+  for (const response of batchReplies) assert.equal(response.status, 200, await response.clone().text());
+  const batchResults = await Promise.all(batchReplies.map(r => r.json()));
+  assert.deepEqual(batchResults.map(r => r.replayed).sort(), [false, true]);
+  for (const id of batchIds) {
+    const record = await raw("invoices/" + id);
+    assert.equal(record.version, 2); assert.equal(record.status, "paid"); assert.equal(record.payment.batch.totalAgorot, 40001);
+    assert.equal(record.payment.checkNumber, "000777");
+  }
+  const batchCancelled = await api("mutations/" + batchBody.mutationId + "/cancel", { entity: "invoices/" + batchIds[0] }, "POST");
+  assert.equal(batchCancelled.status, 200, await batchCancelled.clone().text());
+  const batchSettled = await batchCancelled.json();
+  assert.equal(batchSettled.status, "committed"); assert.equal(batchSettled.relatedRecords.length, 1);
 });

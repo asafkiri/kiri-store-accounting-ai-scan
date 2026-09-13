@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { fail } from "./errors.js";
 import * as v from "./validation.js";
 import { checkSupplierName, prepareInvoiceSupplier } from "./suppliers.js";
+import { DAY, RECYCLE_DAYS, restoreDeadline } from "./recycle.js";
+import { payBatch } from "./batch-payment.js";
 export const hash = (value) =>
   createHash("sha256")
     .update(
@@ -81,6 +83,7 @@ export class AccountingService {
     data,
     action = "save",
     supplierIntent = null,
+    documentId = null,
   }) {
     v.id(id);
     v.id(mutationId);
@@ -93,6 +96,7 @@ export class AccountingService {
       data,
       action,
       ...(supplierIntent ? { supplierIntent } : {}),
+      ...(documentId ? { documentId } : {}),
     });
     const reply = await this.store.transaction(async (tx) => {
       const receipt = await tx.get(receiptKey);
@@ -129,7 +133,7 @@ export class AccountingService {
       // stays available on a tombstone; every other action does not.
       if (
         (previous?.version || 0) !== expectedVersion ||
-        (previous?.deletedAt && !["restore", "detach"].includes(action))
+        (previous?.deletedAt && !["restore", "detach", "expire-attachment"].includes(action))
       )
         fail(
           409,
@@ -178,6 +182,44 @@ export class AccountingService {
         await checkSupplierName(tx, next, previous);
       }
       if (collection === "invoices") {
+        if (action === "detach" && previous.deletedAt && this.now() < restoreDeadline(previous))
+          fail(409, "RECYCLE_NOT_EXPIRED", "החשבונית עדיין ניתנת לשחזור עם הצילומים שלה.");
+        if (action === "delete") next.restoreUntil = this.now() + RECYCLE_DAYS * DAY;
+        if (action === "restore") {
+          if (!previous.deletedAt) fail(409, "NOT_DELETED", "החשבונית כבר נמצאת ברשימה.");
+          if (this.now() >= restoreDeadline(previous))
+            fail(410, "RESTORE_EXPIRED", "חלפו 30 ימים ממחיקת החשבונית ולא ניתן לשחזר אותה.");
+          next.restoreUntil = null;
+        }
+        if (["trash-attachment", "restore-attachment", "expire-attachment"].includes(action)) {
+          const trash = previous.attachmentTrash || [];
+          const entry = trash.find(p => p.id === documentId);
+          const ids = [...(previous.attachmentIds || [])];
+          if (action === "trash-attachment") {
+            const position = ids.indexOf(documentId);
+            if (position < 0) fail(404, "ATTACHMENT_NOT_LINKED", "הצילום אינו מצורף לחשבונית הזאת.");
+            // Retain the original order even when several pages are removed and
+            // restored in a different order.
+            next.attachmentOrder = previous.attachmentOrder || [...ids];
+            next.attachmentIds = ids.filter(id => id !== documentId);
+            next.attachmentTrash = [...trash.filter(p => p.id !== documentId), {
+              id: documentId, deletedAt: this.now(), restoreUntil: this.now() + RECYCLE_DAYS * DAY,
+            }];
+          } else {
+            if (!entry) fail(404, "ATTACHMENT_NOT_LINKED", "הצילום אינו נמצא בסל המחזור.");
+            if (action === "restore-attachment") {
+              if (this.now() >= entry.restoreUntil) fail(410, "RESTORE_EXPIRED", "חלפו 30 ימים ממחיקת הצילום ולא ניתן לשחזר אותו.");
+              if (ids.length >= 8) fail(400, "TOO_MANY_PAGES", "כבר מצורפים 8 קבצים לחשבונית.");
+              ids.push(documentId);
+              const order = previous.attachmentOrder || ids;
+              next.attachmentIds = ids.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+            } else if (this.now() < entry.restoreUntil) {
+              fail(409, "RECYCLE_NOT_EXPIRED", "הצילום עדיין ניתן לשחזור.");
+            }
+            next.attachmentTrash = trash.filter(p => p.id !== documentId);
+          }
+          next.trashedAttachmentIds = next.attachmentTrash.map(p => p.id);
+        }
         if (action === "save") {
           if (!["invoice", "credit"].includes(next.documentType) && previous?.documentType !== next.documentType)
             fail(400, "INVOICE_TYPE_REQUIRED", "כאן שומרים חשבוניות וחשבוניות זיכוי בלבד. אין לשמור תעודת משלוח או קבלה כחשבונית.");
@@ -190,13 +232,25 @@ export class AccountingService {
             supplierIntent,
             uid,
           );
-          for (const aid of next.attachmentIds)
-            if (!(await tx.get("documents/" + aid)))
+          // Editing a list must not bypass the recycle operation.
+          if (previous && (previous.attachmentIds || []).some(aid => !next.attachmentIds.includes(aid)))
+            fail(400, "USE_DOCUMENT_TRASH", "יש להסיר צילום דרך כפתור המחיקה שלו כדי לאפשר שחזור.");
+          if ((previous?.attachmentTrash || []).some(p => next.attachmentIds.includes(p.id)))
+            fail(400, "USE_DOCUMENT_TRASH", "יש לשחזר צילום דרך סל המחזור.");
+          next.attachmentTrash = (previous?.attachmentTrash || []).filter(p => !next.attachmentIds.includes(p.id));
+          next.trashedAttachmentIds = next.attachmentTrash.map(p => p.id);
+          next.attachmentOrder = [...new Set([...(previous?.attachmentOrder || previous?.attachmentIds || []), ...next.attachmentIds])];
+        }
+        if (["save", "restore", "restore-attachment"].includes(action)) {
+          for (const aid of next.attachmentIds) {
+            const document = await tx.get("documents/" + aid);
+            if (!document || document.purgingAt)
               fail(
                 400,
                 "ATTACHMENT_MISSING",
                 "קובץ מצורף לא נמצא. יש להעלות אותו שוב.",
               );
+          }
         }
         // Only entering an invoice, removing it or bringing it back touches its
         // claims. Paying one, or releasing one of its photos, changes nothing
@@ -471,6 +525,14 @@ export class AccountingService {
       data: action === "pay" ? { payment: v.payment(body.payment) } : {},
     });
   }
+  async recycleAttachment(id, documentId, body, uid, action = "trash-attachment") {
+    v.object(body, ["expectedVersion", "mutationId"]);
+    if (typeof documentId !== "string" || !/^[a-f0-9]{64}$/.test(documentId))
+      fail(400, "INVALID_FILES", "מזהה הקובץ אינו תקין.");
+    return this.mutate({ collection: "invoices", id, documentId, action, uid,
+      expectedVersion: body.expectedVersion, mutationId: body.mutationId, data: {} });
+  }
+  async payBatch(id, body, uid) { return payBatch(this, id, body, uid); }
   async backup() {
     const before = (await this.store.get("system/dataVersion"))?.version || 0;
     const [suppliers, invoices, dailyCash, documents] = await Promise.all(

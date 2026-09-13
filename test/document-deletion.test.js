@@ -24,7 +24,7 @@ async function file(shade, name = "invoice.png") {
 async function setup({ retentionDays = 365, now = () => Date.now() } = {}) {
   const store = new MemoryStore(),
     storage = new MemoryStorage();
-  const accounting = new AccountingService(store);
+  const accounting = new AccountingService(store, now);
   const documents = new DocumentService(store, storage);
   const lifecycle = new DocumentLifecycle({
     store,
@@ -63,7 +63,7 @@ async function saveInvoice(accounting, id, attachmentIds, extra = {}) {
   return saved.record;
 }
 
-test("deleting a photo removes the invoice link, the record and the bytes", async () => {
+test("deleting a photo recycles its link and preserves the bytes for restoration", async () => {
   const { store, storage, accounting, documents, lifecycle } = await setup();
   const [record] = await documents.upload([await file("#fff")], uid);
   assert.equal(storage.rows.size, 1);
@@ -74,13 +74,14 @@ test("deleting a photo removes the invoice link, the record and the bytes", asyn
     { expectedVersion: invoice.version, mutationId: randomUUID() },
     uid,
   );
-  assert.equal(result.fileDeleted, true);
-  assert.equal(result.stillUsedBy, null);
+  assert.equal(result.fileDeleted, false);
+  assert.equal(result.recycled, true);
   assert.deepEqual(result.record.attachmentIds, []);
   assert.equal(result.record.version, invoice.version + 1);
-  assert.equal(await store.get("documents/" + record.id), null);
-  assert.equal(storage.rows.size, 0, "the object itself must be gone");
-  await assert.rejects(documents.load([record.id]), (e) => e.code === "FILE_MISSING");
+  assert.ok(await store.get("documents/" + record.id));
+  assert.equal(storage.rows.size, 1, "the recycled object must stay recoverable");
+  assert.equal((await documents.load([record.id])).length, 1);
+  assert.deepEqual(result.record.trashedAttachmentIds, [record.id]);
   // The app learns about it through the same change feed as every other edit.
   const version = (await store.get("system/dataVersion")).version;
   assert.equal(
@@ -91,8 +92,9 @@ test("deleting a photo removes the invoice link, the record and the bytes", asyn
   assert.ok(version > 0);
 });
 
-test("bytes shared by another invoice survive until the last invoice releases them", async () => {
-  const { store, storage, accounting, documents, lifecycle } = await setup();
+test("shared bytes survive every deletion until both recycle periods expire", async () => {
+  let clock = Date.now();
+  const { store, storage, accounting, documents, lifecycle } = await setup({ now: () => clock });
   const page = await file("#fff");
   const [record] = await documents.upload([page], uid);
   const [again] = await documents.upload([page], uid);
@@ -107,7 +109,7 @@ test("bytes shared by another invoice survive until the last invoice releases th
     uid,
   );
   assert.equal(kept.fileDeleted, false);
-  assert.equal(kept.stillUsedBy, "invoice-002");
+  assert.equal(kept.recycled, true);
   assert.equal(storage.rows.size, 1, "the other invoice still needs the file");
   assert.ok(await store.get("documents/" + record.id));
   assert.deepEqual(
@@ -120,7 +122,10 @@ test("bytes shared by another invoice survive until the last invoice releases th
     { expectedVersion: second.version, mutationId: randomUUID() },
     uid,
   );
-  assert.equal(last.fileDeleted, true);
+  assert.equal(last.fileDeleted, false);
+  assert.equal(storage.rows.size, 1);
+  clock += 30 * DAY;
+  await lifecycle.purgeExpired();
   assert.equal(storage.rows.size, 0);
 });
 
@@ -135,7 +140,7 @@ test("a retried deletion replays instead of dropping a second photo", async () =
   const replay = await lifecycle.deleteInvoiceDocument(invoice.id, one.id, request, uid);
   assert.equal(replay.replayed, true);
   assert.deepEqual(replay.record.attachmentIds, [two.id]);
-  assert.equal(storage.rows.size, 1, "the second photo must still be there");
+  assert.equal(storage.rows.size, 2, "the second photo and the recycled first photo must still be there");
 });
 
 test("a stale version, an unknown link and a bad id are refused", async () => {
@@ -182,7 +187,8 @@ test("a stale version, an unknown link and a bad id are refused", async () => {
 });
 
 test("releasing a photo from a deleted invoice leaves its document number free", async () => {
-  const { store, accounting, documents, lifecycle, storage } = await setup();
+  let clock = Date.now();
+  const { store, accounting, documents, lifecycle, storage } = await setup({ now: () => clock });
   const [record] = await documents.upload([await file("#fff")], uid);
   const invoice = await saveInvoice(accounting, "invoice-001", [record.id]);
   const removed = await accounting.actInvoice(
@@ -192,13 +198,16 @@ test("releasing a photo from a deleted invoice leaves its document number free",
     uid,
   );
   assert.ok(removed.record.deletedAt);
-  const result = await lifecycle.deleteInvoiceDocument(
+  await assert.rejects(lifecycle.deleteInvoiceDocument(
     invoice.id,
     record.id,
     { expectedVersion: removed.record.version, mutationId: randomUUID() },
     uid,
-  );
-  assert.equal(result.fileDeleted, true);
+  ), e => e.code === "VERSION_CONFLICT");
+  assert.equal(storage.rows.size, 1);
+  clock += 30 * DAY;
+  const result = await lifecycle.purgeExpired();
+  assert.deepEqual(result.deleted, [record.id]);
   assert.ok((await store.get("invoices/invoice-001")).deletedAt, "the tombstone stays");
   assert.equal(storage.rows.size, 0);
   // The number the tombstone gave up must not be re-claimed by the release.
@@ -231,6 +240,7 @@ test("every photo is deleted once it is older than the retention period", async 
     });
   });
   const before = (await store.get("system/dataVersion")).version;
+  clock += 31 * DAY; // The deleted invoice's recovery window must also finish.
   const result = await lifecycle.purgeExpired();
   assert.deepEqual(result.deleted, [old.id]);
   assert.deepEqual(result.retained, []);
@@ -279,7 +289,7 @@ test("the retention period is configurable and zero keeps every photo", async ()
   const result = await off.lifecycle.purgeExpired();
   assert.equal(result.disabled, true);
   assert.ok(await off.store.get("documents/" + kept.id));
-  assert.equal(await off.lifecycle.maybePurge(), null);
+  assert.equal((await off.lifecycle.maybePurge()).disabled, true, "recycle cleanup still runs when age-based retention is disabled");
 });
 
 test("attaching the same photo to a new invoice restarts its year", async () => {

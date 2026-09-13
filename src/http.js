@@ -265,8 +265,16 @@ export function createHandler({
           return;
         }
       }
-      // Deleting one photo: the invoice releases it, and the file itself is
-      // deleted from Storage unless another invoice still uses those bytes.
+      const batchPayment = path.match(/^invoices\/([a-zA-Z0-9_-]+)\/pay-batch$/);
+      if (batchPayment && method === "POST") {
+        send(200, await accounting.payBatch(batchPayment[1], await jsonBody(req), user.uid));
+        return;
+      }
+      const restoreAttachment = path.match(/^invoices\/([a-zA-Z0-9_-]+)\/documents\/([a-f0-9]{64})\/restore$/);
+      if (restoreAttachment && method === "POST") {
+        send(200, await accounting.recycleAttachment(restoreAttachment[1], restoreAttachment[2], await jsonBody(req), user.uid, "restore-attachment"));
+        return;
+      }
       const attachment = path.match(
         /^invoices\/([a-zA-Z0-9_-]+)\/documents\/([a-f0-9]{64})$/,
       );

@@ -142,12 +142,14 @@ gcloud run services describe kiri-store-accounting-ai-scan \
 | PUT | אותם נתיבים עם `/:id` | `{expectedVersion,mutationId,data}` |
 | POST | `/api/v1/mutations/:id/cancel` | `{entity}` → cancelled או committed עם הרשומות; הכרעת ניסיון שמירה ללא מחיקת נתונים |
 | POST | `/api/v1/invoices/:id/pay` | `{expectedVersion,mutationId,payment}` |
+| POST | `/api/v1/invoices/:id/pay-batch` | תשלום אטומי לעד 50 חשבוניות פתוחות של אותו ספק, עם גרסאות וסכום מאושר |
 | POST | `/api/v1/invoices/:id/unpay` | החזרה ללא שולם, עם גרסה ומזהה פעולה |
 | DELETE | `/api/v1/invoices/:id` | soft-delete; JSON עם גרסה ומזהה פעולה |
 | POST | `/api/v1/invoices/:id/restore` | שחזור מחיקה, עם גרסה ומזהה פעולה |
 | POST | `/api/v1/documents` | `{files:[{name,mime,data:base64}]}` → מסמכים שמורים |
 | GET | `/api/v1/documents/:sha256` | תוכן הקובץ לאחר authorization; no-store |
-| DELETE | `/api/v1/invoices/:id/documents/:sha256` | `{expectedVersion,mutationId}`: החשבונית משחררת את הצילום, והקובץ נמחק מ־Storage אם אין חשבונית אחרת שמצורפת לאותם בתים. התשובה כוללת את החשבונית המעודכנת, `fileDeleted` ו־`stillUsedBy` |
+| DELETE | `/api/v1/invoices/:id/documents/:sha256` | `{expectedVersion,mutationId}`: העברת הצילום לסל מחזור ל־30 יום; הקובץ נשאר באחסון. תשובה כוללת `record`, `recycled` ו־`restoreUntil` |
+| POST | `/api/v1/invoices/:id/documents/:sha256/restore` | שחזור צילום לחשבונית המקורית ולסדר העמודים המקורי, עם גרסה ומזהה פעולה |
 | POST | `/api/v1/documents/purge` | מריץ מיד מחווה אחת של מחיקת צילומים שחלפה תקופת השמירה שלהם; מחזיר `retentionDays`, `deleted`, `retained`, `released` ו־`remaining` |
 | GET | `/api/v1/reports/summary` | סיכום ושדות חסרים, לפי פילטרים |
 | GET | `/api/v1/backup` | JSON schemaVersion 1; ללא קובצי צילום בינאריים |
@@ -166,7 +168,7 @@ gcloud run services describe kiri-store-accounting-ai-scan \
 
 ### מחיקת צילום ותקופת שמירה
 
-מחיקה כאן היא מחיקה של הקובץ עצמו, לא הסתרת שורה. הסדר קבוע בשני המסלולים: קודם כל חשבונית שמצורפת לקובץ משחררת אותו (מוטציה רגילה עם `expectedVersion`, `mutationId`, אירוע `changes` ו־receipt), אחר כך הרשומה מסומנת `purgingAt`, אחר כך האובייקט נמחק מ־Storage, ולבסוף הרשומה נמחקת מ־Firestore. מחיקה שנקטעה באמצע אינה משאירה חשבונית שמצביעה על קובץ שאי אפשר לפתוח, והמחווה הבאה משלימה אותה.
+מחיקה יזומה מעבירה את קישור הצילום ל־`attachmentTrash` ול־`trashedAttachmentIds` בחשבונית, עם מועד שחזור ל־30 יום. מחיקת חשבונית שומרת את קישורי הצילום ופרטי התשלום, ומגבילה גם את שחזורה ל־30 יום. פעולת ניקוי מסירה קישורים שפג חלון השחזור שלהם לפני מחיקת הקובץ עצמו. קישורים פעילים או בסל מחזור של חשבונית אחרת מגינים על אותו קובץ. מחיקת הקובץ בפועל מתחילה רק כאשר אין עוד קישורים כאלה. הסדר קבוע בשני המסלולים: קודם כל חשבונית שמצורפת לקובץ משחררת אותו (מוטציה רגילה עם `expectedVersion`, `mutationId`, אירוע `changes` ו־receipt), אחר כך הרשומה מסומנת `purgingAt`, אחר כך האובייקט נמחק מ־Storage, ולבסוף הרשומה נמחקת מ־Firestore. מחיקה שנקטעה באמצע אינה משאירה חשבונית שמצביעה על קובץ שאי אפשר לפתוח, והמחווה הבאה משלימה אותה.
 
 - אותם בתים מזוהים לפי SHA-256 ולכן משותפים לכל חשבונית שצולמה מאותו קובץ. מחיקה מחשבונית אחת משחררת רק אותה; האובייקט נמחק כשאף חשבונית אינה מצורפת אליו. הבדיקה מתבצעת בתוך הטרנזקציה, בשאילתת `array-contains` על `invoices`.
 - רשומה מסומנת `purgingAt` נחשבת חסרה: `GET /api/v1/documents/:sha256` מחזיר 404, והעלאה חוזרת של אותם בתים כותבת אובייקט בנתיב חדש ומנקה את הסימון, כך שהמחיקה שבמסלול מסיימת למחוק רק את האובייקט הישן.
@@ -190,3 +192,7 @@ gcloud run services describe kiri-store-accounting-ai-scan \
 `DELETE /api/v1/suppliers/:id` מסיר גם ספק עם היסטוריה מהרשימה. הוא אינו מוחק חשבוניות, תשלומים או קבצים. נשמרים `deletedAt`, מצב הפעילות הקודם ו־`restoreUntil` ל־30 יום לפי שעון השרת. `POST /api/v1/suppliers/:id/restore` דורש `expectedVersion` ו־`mutationId`; שחזור אחרי המועד נדחה ב־410. שחזור בודק גם כפילות שמות וגרסה, ומחזיר את מצב הפעילות הקודם. לאחר פקיעת חלון השחזור נשארת רשומת היסטוריה לצורך שיוך החשבוניות והסנכרון, ולא ניתן לשחזר אותה דרך ה־API. אין מחיקה מדורגת של חשבוניות או של audit.
 
 `GET/PUT /api/v1/settings/accounting` שומר `defaultVatBasisPoints` (ברירת המחדל בממשק היא 1800 = 18%). הכתיבה דורשת גרסה ומזהה פעולה, משתתפת בסנכרון כמו יתר הרשומות, ומוגנת באותה הרשאה. ההעדפה אינה משנה חילוץ AI או חשבוניות קיימות: רק בחירה מפורשת של המשתמש בממשק מחשבת מע״מ מתוך הסכום הכולל. הפחתה מהתשלום נשמרת בניכויים ובסכום הסופי, בלי לשנות את הסכום הכולל או המע״מ של החשבונית.
+
+### תשלום לכמה חשבוניות
+
+`POST /api/v1/invoices/:id/pay-batch` מקבל `expectedVersion`, `mutationId`, `items: [{id,expectedVersion}]`, `totalAgorot` ו־`payment`. מזהה הנתיב חייב להיות אחד הפריטים. עד 50 פריטים ייחודיים, כולם פעילים, לא שולמו, ובעלי אותו ספק. השרת מחשב סכום כולל באגורות, כולל זיכויים תקינים, ומשווה לסכום שהמשתמש אישר. סך שלילי נדחה. כל הרשומות, יומן הסנכרון וה־receipt נכתבים בטרנזקציה אחת. ה־receipt משויך לחשבונית שבנתיב; `relatedRecords` מחזיר את יתר החשבוניות גם בניסיון חוזר ובביטול שהגיע אחרי השמירה. `payment.batch` מתעד את הבחירה והסכום המקוריים. שינוי תשלום מאוחר בחשבונית אחת חל רק עליה.
