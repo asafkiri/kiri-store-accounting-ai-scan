@@ -154,6 +154,8 @@ export class AccountingService {
         });
       if (action === "delete") next.deletedAt = tx.stamp();
       if (action === "restore") next.deletedAt = null;
+      if (collection === "dailyCash" && action === "restore" && !previous.deletedAt)
+        fail(409, "NOT_DELETED", "כבר קיימת סגירה בתאריך הזה. יש לפתוח אותה לעריכה.");
       let supplierChange = null;
       if (collection === "suppliers") {
         if (action === "delete") {
@@ -393,17 +395,31 @@ export class AccountingService {
           : null,
     });
   }
-  async saveCash(id, body, uid) {
+  async saveCash(id, body, uid, restore = false) {
     v.object(body, ["expectedVersion", "mutationId", "data"]);
     const data = v.cash(body.data);
     if (data.date !== id) fail(400, "INVALID_DATE", "תאריך הרשומה אינו תואם.");
     return this.mutate({
       collection: "dailyCash",
       id,
+      action: restore ? "restore" : "save",
       expectedVersion: body.expectedVersion,
       mutationId: body.mutationId,
       uid,
       data,
+    });
+  }
+  async deleteCash(id, body, uid) {
+    v.date(id);
+    v.object(body, ["expectedVersion", "mutationId"]);
+    return this.mutate({
+      collection: "dailyCash",
+      id,
+      action: "delete",
+      expectedVersion: body.expectedVersion,
+      mutationId: body.mutationId,
+      uid,
+      data: {},
     });
   }
   // Releasing one photo is a versioned invoice mutation like any other, so a

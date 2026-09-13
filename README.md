@@ -82,7 +82,7 @@ gcloud run services describe kiri-store-accounting-ai-scan \
 |---|---|
 | `suppliers` | שם, קשר, הערות, active, גרסה ומטא־נתונים |
 | `invoices` | ספק, מספר (רשות), סוג, תאריך, סכומים, הפחתות, payment, status, מסמכים, מקור, סקירה, `duplicateAllowed`, גרסה, soft delete |
-| `dailyCash` | ID שהוא תאריך; cashAgorot ו־ravKavAgorot נפרדים, null שונה מאפס |
+| `dailyCash` | ID שהוא תאריך; cashAgorot ו־ravKavAgorot נפרדים, null שונה מאפס; מחיקה רכה מסונכרנת לכל המכשירים |
 | `documents` | שם/סוג/גודל/עמודים; ה־ID הוא SHA-256 של הקובץ. `storagePath` הוא הנתיב בפועל, `uploadedAt` מתחיל את שעון השמירה מחדש בכל העלאה של אותם בתים, ו־`purgingAt` מסמן מחיקה שכבר החלה |
 | `scanJobs` | רשומות היסטוריות מתקופת הקריאה האוטומטית; אינן נכתבות עוד |
 | `mutations` | receipt לשמירה עם fingerprint/audit, או receipt עם `state: cancelled` שחוסם ניסיון שטרם נשמר |
@@ -93,6 +93,8 @@ gcloud run services describe kiri-store-accounting-ai-scan \
 אין יתרת ספק נפרדת. הסכום הפתוח מחושב מחשבוניות פעילות שלא שולמו. `payment.paymentDate` הוא יום התשלום/מסירת הצ׳ק. `payment.checkDueDate` שדה עצמאי. עריכת חשבונית אינה מאפסת תשלום.
 
 לכל write נדרשים `expectedVersion` ו־`mutationId`. העסקה קוראת את הגרסה, מפתחות הכפילות ו־receipt לפני כל כתיבה. retry עם אותו payload ואותו ID מחזיר את הרשומה בלי write כפול; שינוי payload באותו ID או גרסה ישנה מחזיר 409. receipts ו־audit נשמרים ללא מחיקה אוטומטית ב־V1.
+
+מחיקת סגירה: `DELETE /api/v1/daily-cash/YYYY-MM-DD` מקבל `expectedVersion` ו־`mutationId` ושומר סימון `deletedAt`. הסימון נשאר בסנכרון ובגיבוי, והלקוח מסנן אותו מהרשימה, מהסיכומים ומייצוא CSV. לרישום מחדש ביום שנמחק שולחים `POST /api/v1/daily-cash/YYYY-MM-DD/restore` עם הגרסה העדכנית ו־`data` מלא של הסכומים החדשים. הפעולה מותרת רק לרשומה שנמחקה; שמירה ישנה או מחיקה ממכשיר שלא התעדכן אינן יכולות לשנות את הסגירה החדשה. הרשאות הבעלים, ביטול ניסיון והגנה מפני בקשות כפולות זהים לשמירה.
 
 ### מניעת קליטה כפולה של אותה חשבונית
 
