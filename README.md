@@ -81,12 +81,12 @@ gcloud run services describe kiri-store-accounting-ai-scan \
 | Collection | שימוש |
 |---|---|
 | `suppliers` | שם, קשר, הערות, active, גרסה ומטא־נתונים |
-| `invoices` | ספק, מספר, סוג, תאריך, סכומים, הפחתות, payment, status, מסמכים, מקור, סקירה, גרסה, soft delete |
+| `invoices` | ספק, מספר (רשות), סוג, תאריך, סכומים, הפחתות, payment, status, מסמכים, מקור, סקירה, גרסה, soft delete |
 | `dailyCash` | ID שהוא תאריך; cashAgorot ו־ravKavAgorot נפרדים, null שונה מאפס |
 | `documents` | שם/סוג/גודל/עמודים; ה־ID הוא SHA-256 של הקובץ. `storagePath` הוא הנתיב בפועל, `uploadedAt` מתחיל את שעון השמירה מחדש בכל העלאה של אותם בתים, ו־`purgingAt` מסמן מחיקה שכבר החלה |
 | `scanJobs` | רשומות היסטוריות מתקופת הקריאה האוטומטית; אינן נכתבות עוד |
 | `mutations` | receipt לשמירה עם fingerprint/audit, או receipt עם `state: cancelled` שחוסם ניסיון שטרם נשמר |
-| `invoiceKeys` | מפתח ספק+סוג+מספר למניעת חשבוניות כפולות |
+| `invoiceKeys` | מפתח ספק+סוג+מספר למניעת חשבוניות כפולות; חשבונית שנשמרה בלי מספר אינה תופסת מפתח ואינה חוסמת אחרת |
 | `changes` | יומן גרסאות לסנכרון מצטבר |
 | `system` | גרסת נתונים ומועד המחווה האחרונה של מחיקת הצילומים |
 

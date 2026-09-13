@@ -276,3 +276,31 @@ test("review is required and no unverified supplier or privileged fields can ent
     (e) => e.code === "SUPPLIER_MISSING",
   );
 });
+
+test("invoices typed without a number neither block each other nor lose the duplicate guard", async () => {
+  const { service, store } = await fixture();
+  const blank = { ...inv(), documentNumber: "" };
+  const first = await service.saveInvoice("invoice-blank-1", body(blank), uid);
+  assert.equal(first.record.documentNumber, "");
+  // A second invoice from the same supplier on the same day is a different
+  // invoice, not a duplicate: without numbers there is nothing to compare.
+  const second = await service.saveInvoice("invoice-blank-2", body(blank), uid);
+  assert.equal(second.record.id, "invoice-blank-2");
+  assert.equal((await store.list("invoiceKeys")).length, 0, "an invoice with no number claims none");
+  // Where a number was typed, entering it twice is still refused.
+  await service.saveInvoice("invoice-numbered", body({ ...inv(), documentNumber: "A-77" }), uid);
+  await assert.rejects(
+    service.saveInvoice("invoice-numbered-again", body({ ...inv(), documentNumber: "A-77" }), uid),
+    e => e.code === "DUPLICATE_INVOICE",
+  );
+  // Adding the number later claims it; clearing it again releases the claim.
+  const numbered = await service.saveInvoice("invoice-blank-1", body({ ...blank, documentNumber: "B-88" }, 1), uid);
+  assert.equal(numbered.record.documentNumber, "B-88");
+  await assert.rejects(
+    service.saveInvoice("invoice-blank-3", body({ ...inv(), documentNumber: "B-88" }), uid),
+    e => e.code === "DUPLICATE_INVOICE",
+  );
+  await service.saveInvoice("invoice-blank-1", body(blank, 2), uid);
+  const released = await service.saveInvoice("invoice-blank-3", body({ ...inv(), documentNumber: "B-88" }), uid);
+  assert.equal(released.record.documentNumber, "B-88");
+});
