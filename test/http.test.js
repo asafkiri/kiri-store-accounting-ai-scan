@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import sharp from "sharp";
 import { createHandler } from "../src/http.js";
 import { MemoryStore, MemoryStorage, config, inv } from "./helpers.js";
 async function setup(t, verifyOverride) {
@@ -58,6 +59,7 @@ test("all sensitive endpoints reject missing/invalid token and unauthorized vali
     "/api/v1/invoices",
     "/api/v1/backup",
     "/api/v1/documents/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "/api/v1/documents/purge",
   ]) {
     assert.equal(
       (await request(path, { headers: { Authorization: "" } })).status,
@@ -329,4 +331,53 @@ test("supplier restoration and VAT settings use authorized versioned endpoints a
   assert.equal(sync.suppliers[0].deletedAt, null);
   assert.equal(sync.settings[0].defaultVatBasisPoints, 1700);
   assert.equal((await (await request("/api/v1/sync")).json()).settings[0].defaultVatBasisPoints, 1700);
+});
+
+test("photo deletion over HTTP needs the authorized user and really removes the file", async t => {
+  const { request, store } = await setup(t);
+  const png = await sharp({ create: { width: 16, height: 16, channels: 3, background: "#fff" } }).png().toBuffer();
+  await request("/api/v1/suppliers/supplier-001", { method: "PUT", body: JSON.stringify({ expectedVersion: 0, mutationId: randomUUID(), data: { name: "ספק לצילום", active: true, notes: "", contact: "" } }) });
+  const uploaded = await request("/api/v1/documents", { method: "POST", body: JSON.stringify({ files: [{ name: "page.png", mime: "image/png", data: png.toString("base64") }] }) });
+  assert.equal(uploaded.status, 200, await uploaded.clone().text());
+  const documentId = (await uploaded.json()).documents[0].id;
+  const saved = await request("/api/v1/invoices/invoice-photo", { method: "PUT", body: JSON.stringify({ expectedVersion: 0, mutationId: randomUUID(), data: { ...inv(), attachmentIds: [documentId] } }) });
+  assert.equal(saved.status, 200, await saved.clone().text());
+  const version = (await saved.json()).record.version;
+  const path = "/api/v1/invoices/invoice-photo/documents/" + documentId;
+  const options = { method: "DELETE", body: JSON.stringify({ expectedVersion: version, mutationId: randomUUID() }) };
+  assert.equal((await request(path, { ...options, headers: { Authorization: "" } })).status, 401);
+  assert.equal((await request(path, { ...options, headers: { Authorization: "Bearer valid-other-token" } })).status, 403);
+  assert.ok(await store.get("documents/" + documentId), "a refused request must not delete anything");
+  const response = await request(path, options);
+  assert.equal(response.status, 200, await response.clone().text());
+  const result = await response.json();
+  assert.equal(result.fileDeleted, true);
+  assert.deepEqual(result.record.attachmentIds, []);
+  assert.equal(await store.get("documents/" + documentId), null);
+  assert.equal((await request("/api/v1/documents/" + documentId)).status, 404);
+  assert.equal((await request("/api/v1/invoices/invoice-photo/documents/" + documentId, { method: "DELETE", body: JSON.stringify({ expectedVersion: result.record.version, mutationId: randomUUID() }) })).status, 404);
+});
+
+test("sync reports the retention period and sweeps expired photos after answering", async t => {
+  const { request, store, logs } = await setup(t);
+  const documentId = "c".repeat(64);
+  await store.transaction(async tx => {
+    tx.set("documents/" + documentId, { id: documentId, name: "old.jpg", mime: "image/jpeg", pages: 1, size: 10,
+      storagePath: "documents/" + documentId, createdAt: Date.now() - 400 * 24 * 60 * 60 * 1000, uploadedAt: Date.now() - 400 * 24 * 60 * 60 * 1000 });
+    tx.set("invoices/invoice-old", { ...inv(), id: "invoice-old", documentNumber: "OLD-1", version: 1, status: "unpaid",
+      payment: null, deletedAt: null, attachmentIds: [documentId] });
+  });
+  const first = await (await request("/api/v1/sync")).json();
+  assert.equal(first.documentRetentionDays, 365);
+  for (let waited = 0; waited < 50 && (await store.get("documents/" + documentId)); waited++)
+    await new Promise(r => setTimeout(r, 20));
+  assert.equal(await store.get("documents/" + documentId), null, "the sweep must delete a photo older than a year");
+  assert.deepEqual((await store.get("invoices/invoice-old")).attachmentIds, []);
+  assert.equal((await store.get("invoices/invoice-old")).version, 2);
+  const manual = await request("/api/v1/documents/purge", { method: "POST" });
+  assert.equal(manual.status, 200, await manual.clone().text());
+  const summary = await manual.json();
+  assert.equal(summary.retentionDays, 365);
+  assert.deepEqual(summary.deleted, []);
+  assert.ok(!JSON.stringify(logs).includes("valid-owner-token"));
 });

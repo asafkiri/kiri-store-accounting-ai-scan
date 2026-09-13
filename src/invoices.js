@@ -86,9 +86,11 @@ export class AccountingService {
       }
       const previous = await tx.get(key);
       const dataVersion = await tx.get("system/dataVersion");
+      // A deleted invoice still points at its photos, so releasing a photo
+      // stays available on a tombstone; every other action does not.
       if (
         (previous?.version || 0) !== expectedVersion ||
-        (previous?.deletedAt && action !== "restore")
+        (previous?.deletedAt && !["restore", "detach"].includes(action))
       )
         fail(
           409,
@@ -155,9 +157,11 @@ export class AccountingService {
                 "קובץ מצורף לא נמצא. יש להעלות אותו שוב.",
               );
         }
-        const newClaim = claimKey(next),
-          oldClaim = previous ? claimKey(previous) : null;
-        const occupied = await tx.get(newClaim);
+        // Releasing a photo touches neither the supplier nor the document
+        // number, so it must not re-claim a number a tombstone gave up.
+        const newClaim = action === "detach" ? null : claimKey(next),
+          oldClaim = previous && action !== "detach" ? claimKey(previous) : null;
+        const occupied = newClaim ? await tx.get(newClaim) : null;
         if (
           action !== "delete" &&
           occupied?.invoiceId &&
@@ -188,10 +192,11 @@ export class AccountingService {
         // All transaction reads precede writes (Firestore requirement).
         if (oldClaim && oldClaim !== newClaim)
           tx.set(oldClaim, { id: oldClaim.split("/")[1], invoiceId: null });
-        tx.set(newClaim, {
-          id: newClaim.split("/")[1],
-          invoiceId: action === "delete" ? null : id,
-        });
+        if (newClaim)
+          tx.set(newClaim, {
+            id: newClaim.split("/")[1],
+            invoiceId: action === "delete" ? null : id,
+          });
       }
       const relatedPaths = supplierChange
         ? ["suppliers/" + supplierChange.record.id]
@@ -353,6 +358,38 @@ export class AccountingService {
       mutationId: body.mutationId,
       uid,
       data,
+    });
+  }
+  // Releasing one photo is a versioned invoice mutation like any other, so a
+  // lost answer can be retried with the same mutationId and replays instead of
+  // dropping a second photo. Filtering an already filtered list is unchanged,
+  // which is what lets that replay through the fingerprint check in mutate.
+  async detachAttachment(id, documentId, body, uid) {
+    v.object(body, ["expectedVersion", "mutationId"]);
+    if (typeof documentId !== "string" || !/^[a-f0-9]{64}$/.test(documentId))
+      fail(400, "INVALID_FILES", "מזהה הקובץ אינו תקין.");
+    const invoice = await this.store.get("invoices/" + id);
+    if (!invoice) fail(404, "NOT_FOUND", "הרשומה לא נמצאה.");
+    const attachmentIds = (invoice.attachmentIds || []).filter(
+      (attachment) => attachment !== documentId,
+    );
+    if (
+      attachmentIds.length === (invoice.attachmentIds || []).length &&
+      !(await this.store.get("mutations/" + body.mutationId))
+    )
+      fail(
+        404,
+        "ATTACHMENT_NOT_LINKED",
+        "הצילום הזה אינו מצורף לחשבונית הזאת.",
+      );
+    return this.mutate({
+      collection: "invoices",
+      id,
+      action: "detach",
+      expectedVersion: body.expectedVersion,
+      mutationId: body.mutationId,
+      uid,
+      data: { attachmentIds },
     });
   }
   async actInvoice(id, action, body, uid) {

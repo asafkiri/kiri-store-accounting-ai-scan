@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 import { getApps, deleteApp } from "firebase-admin/app";
+import { getStorage } from "firebase-admin/storage";
 import sharp from "sharp";
 import { firebaseServices } from "../src/firebase.js";
 import { createHandler } from "../src/http.js";
@@ -317,4 +318,58 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     403,
   );
   assert.ok([401, 403].includes((await fetch(storageUrl)).status));
+  // Deleting a photo for real: the transactional array-contains query, the
+  // Storage object removal and the retention sweep against actual Firebase.
+  // Client rules deny every direct read, so existence is checked the way the
+  // service itself sees the bucket.
+  const objectExists = async (path) =>
+    (await getStorage().bucket().file(path).exists())[0];
+  const stored = await raw("documents/" + doc.id);
+  assert.equal(stored.storagePath, "documents/" + doc.id);
+  assert.equal(await objectExists(stored.storagePath), true);
+  const shared = await api("invoices/invoice-shared-photo", {
+    expectedVersion: 0,
+    mutationId: randomUUID(),
+    data: { ...inv(), documentNumber: "SHARED-PHOTO", attachmentIds: [doc.id] },
+  });
+  assert.equal(shared.status, 200, await shared.clone().text());
+  const linkPath = "invoices/invoice-inline-001/documents/" + doc.id;
+  const held = await api(
+    linkPath,
+    { expectedVersion: (await raw("invoices/invoice-inline-001")).version, mutationId: randomUUID() },
+    "DELETE",
+  );
+  assert.equal(held.status, 200, await held.clone().text());
+  const heldResult = await held.json();
+  assert.equal(heldResult.fileDeleted, false);
+  assert.equal(heldResult.stillUsedBy, "invoice-shared-photo");
+  assert.equal(await objectExists(stored.storagePath), true);
+  // Backdating the upload is what a year in the store looks like to the sweep.
+  await rawRoot
+    .collection("documents")
+    .doc(doc.id)
+    .update({ uploadedAt: Date.now() - 400 * 24 * 60 * 60 * 1000 });
+  const purged = await api("documents/purge", null, "POST");
+  assert.equal(purged.status, 200, await purged.clone().text());
+  const summary = await purged.json();
+  assert.equal(summary.retentionDays, 365);
+  assert.deepEqual(summary.deleted, [doc.id]);
+  assert.equal(summary.released, 1, "the sharing invoice had to release it");
+  assert.equal(await raw("documents/" + doc.id), undefined);
+  assert.equal(await objectExists(stored.storagePath), false);
+  assert.equal((await api("documents/" + doc.id)).status, 404);
+  assert.deepEqual(
+    (await raw("invoices/invoice-shared-photo")).attachmentIds,
+    [],
+  );
+  assert.deepEqual((await raw("invoices/invoice-inline-001")).attachmentIds, []);
+  // The same bytes can be scanned again afterwards and get their own object.
+  const again = await api(
+    "documents",
+    { files: [{ name: "test.png", mime: "image/png", data: png.toString("base64") }] },
+    "POST",
+  );
+  assert.equal(again.status, 200, await again.clone().text());
+  assert.equal((await again.json()).documents[0].id, doc.id);
+  assert.equal((await api("documents/" + doc.id)).status, 200);
 });

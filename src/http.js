@@ -4,6 +4,7 @@ import { authorizeRequest } from "./authorize-request.js";
 import { safeDiagnostic } from "./diagnostics.js";
 import { AccountingService } from "./invoices.js";
 import { DocumentService } from "./files.js";
+import { DocumentLifecycle } from "./document-lifecycle.js";
 import * as v from "./validation.js";
 const MAX_BODY = 17 * 1024 * 1024;
 async function jsonBody(req, limit = 96 * 1024) {
@@ -33,6 +34,12 @@ export function createHandler({
 }) {
   const accounting = new AccountingService(store),
     documents = new DocumentService(store, storage);
+  const lifecycle = new DocumentLifecycle({
+    store,
+    storage,
+    accounting,
+    retentionDays: config.documentRetentionDays ?? 365,
+  });
   // Per-instance in-flight guard bounds decoding memory.
   let uploadBusy = false;
   return async function handler(req, res) {
@@ -40,7 +47,8 @@ export function createHandler({
       start = Date.now();
     let diagnostic = null,
       category = null,
-      route = "unknown";
+      route = "unknown",
+      sweepAfterAnswer = false;
     const send = (status, data) => {
       res.statusCode = status;
       res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -117,14 +125,18 @@ export function createHandler({
         return;
       }
       if (path === "sync" && method === "GET") {
+        sweepAfterAnswer = true;
         v.object(Object.fromEntries(url.searchParams), ["since"]);
         const since = Number(url.searchParams.get("since") || 0);
         if (!Number.isSafeInteger(since) || since < 0)
           fail(400, "INVALID_INPUT", "גרסת הסנכרון אינה תקינה.");
         const meta = await store.get("system/dataVersion"),
           current = meta?.version || 0;
+        // The app tells the owner how long a photo is kept, so the period is
+        // read from the service instead of being repeated in the app.
+        const retention = { documentRetentionDays: lifecycle.retentionDays };
         if (since === current && since !== 0) {
-          send(200, { version: current, unchanged: true });
+          send(200, { version: current, unchanged: true, ...retention });
           return;
         }
         // Initial snapshot is read after recording the cursor; later refreshes cannot skip concurrent changes.
@@ -141,6 +153,7 @@ export function createHandler({
             invoices,
             dailyCash,
             settings,
+            ...retention,
           });
           return;
         }
@@ -161,7 +174,7 @@ export function createHandler({
             if (record) data[key.split("/")[0]].push(record);
           }),
         );
-        send(200, { version: current, full: false, ...data });
+        send(200, { version: current, full: false, ...data, ...retention });
         return;
       }
       if (path === "settings/accounting" && method === "PUT") {
@@ -243,6 +256,23 @@ export function createHandler({
           return;
         }
       }
+      // Deleting one photo: the invoice releases it, and the file itself is
+      // deleted from Storage unless another invoice still uses those bytes.
+      const attachment = path.match(
+        /^invoices\/([a-zA-Z0-9_-]+)\/documents\/([a-f0-9]{64})$/,
+      );
+      if (attachment && method === "DELETE") {
+        send(
+          200,
+          await lifecycle.deleteInvoiceDocument(
+            attachment[1],
+            attachment[2],
+            await jsonBody(req),
+            user.uid,
+          ),
+        );
+        return;
+      }
       const action = path.match(
         /^invoices\/([a-zA-Z0-9_-]+)\/(pay|unpay|restore)$/,
       );
@@ -271,6 +301,14 @@ export function createHandler({
         } finally {
           uploadBusy = false;
         }
+        return;
+      }
+      // The sweep normally rides on sync traffic. This runs one batch now.
+      if (path === "documents/purge" && method === "POST") {
+        send(200, {
+          retentionDays: lifecycle.retentionDays,
+          ...(await lifecycle.purgeExpired({ uid: user.uid })),
+        });
         return;
       }
       const doc = path.match(/^documents\/([a-f0-9]{64})$/);
@@ -332,6 +370,20 @@ export function createHandler({
         errorCategory: category,
         ...diagnostic,
       });
+      // After the answer, never inside it: a photo older than the retention
+      // period must not delay the screen that asked for the data.
+      if (sweepAfterAnswer && res.statusCode === 200)
+        void lifecycle.maybePurge().catch((error) =>
+          log({
+            requestId,
+            endpoint: "/documents/purge",
+            method: "SWEEP",
+            status: 500,
+            durationMs: Date.now() - start,
+            errorCategory: "PURGE_FAILED",
+            ...safeDiagnostic(error),
+          }),
+        );
     }
   };
 }

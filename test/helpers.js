@@ -17,6 +17,18 @@ export class MemoryStore {
       .slice(0, limit)
       .map(([, v]) => structuredClone(v));
   }
+  async query(collection, field, value, limit = 50) {
+    return [...this.rows]
+      .filter(
+        ([k, v]) =>
+          k.startsWith(collection + "/") &&
+          Array.isArray(v[field]) &&
+          v[field].includes(value),
+      )
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(0, limit)
+      .map(([, v]) => structuredClone(v));
+  }
   async transaction(fn) {
     let release;
     const previous = this.chain;
@@ -36,9 +48,26 @@ export class MemoryStore {
             .filter(([key]) => key.startsWith(collection + "/"))
             .map(([, value]) => structuredClone(value));
         },
+        query: async (collection, field, value, limit = 50) => {
+          if (wrote) throw new Error("Firestore reads must precede writes");
+          return [...staged]
+            .filter(
+              ([key, row]) =>
+                key.startsWith(collection + "/") &&
+                Array.isArray(row[field]) &&
+                row[field].includes(value),
+            )
+            .sort(([a], [b]) => a.localeCompare(b))
+            .slice(0, limit)
+            .map(([, row]) => structuredClone(row));
+        },
         set: (k, v) => {
           wrote = true;
           staged.set(k, structuredClone(v));
+        },
+        delete: (k) => {
+          wrote = true;
+          staged.delete(k);
         },
         stamp: () => Date.now(),
       });
@@ -59,11 +88,15 @@ export class MemoryStorage {
   async get(k) {
     return this.rows.get(k);
   }
+  async delete(k) {
+    this.rows.delete(k);
+  }
 }
 export const config = {
   allowedPhone: "+15555550123",
   allowedUid: "",
   allowedOrigins: ["https://kiri-store-accounting.web.app"],
+  documentRetentionDays: 365,
 };
 export const inv = () => ({
   supplierId: "supplier-001",
