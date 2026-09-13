@@ -125,6 +125,12 @@ test("two devices using normalized variants: one commits, the other can explicit
     invoice(" מרינה ", {
       supplierId: "supplier-new-002",
       documentNumber: "1002",
+      // A second, different invoice from the same new supplier: its own number
+      // and its own amounts, so only the supplier race is under test here.
+      subtotalAgorot: 20000,
+      vatAgorot: 3600,
+      totalAgorot: 23600,
+      finalAgorot: 23600,
     }),
   ];
   const ids = ["invoice-new-001", "invoice-new-002"];
