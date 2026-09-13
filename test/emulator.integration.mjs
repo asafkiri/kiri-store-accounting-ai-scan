@@ -198,8 +198,26 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   const restored = await api("invoices/invoice-001/restore", { expectedVersion: 4, mutationId: restoreId }, "POST");
   assert.equal(restored.status, 200, await restored.clone().text());
   assert.ok((await raw("mutations/" + restoreId)).before.deletedAt instanceof Timestamp);
+  // The same supplier, date, total and VAT is the same invoice, typed again:
+  // refused against real claim documents, and saved only when told it is
+  // another invoice. Nothing of the first invoice is touched either way.
+  const twin = { ...inv(), documentNumber: "" };
+  const refused = await api("invoices/invoice-twin", { expectedVersion: 0, mutationId: randomUUID(), data: twin });
+  assert.equal(refused.status, 409);
+  const refusal = await refused.json();
+  assert.equal(refusal.error.code, "DUPLICATE_INVOICE_DETAILS");
+  assert.equal(refusal.error.details.invoiceId, "invoice-001");
+  assert.equal(await raw("invoices/invoice-twin"), undefined);
+  const allowed = await api("invoices/invoice-twin", {
+    expectedVersion: 0,
+    mutationId: randomUUID(),
+    data: { ...twin, duplicateAllowed: true },
+  });
+  assert.equal(allowed.status, 200, await allowed.clone().text());
+  assert.equal((await raw("invoices/invoice-twin")).duplicateAllowed, true);
+  await api("invoices/invoice-twin", { expectedVersion: 1, mutationId: randomUUID() }, "DELETE");
   const snapshot = await (await api("sync")).json();
-  assert.equal(snapshot.invoices.length, 1);
+  assert.equal(snapshot.invoices.length, 2);
   assert.equal(snapshot.dailyCash[0].ravKavAgorot, 6789);
   const inlineBody = {
     expectedVersion: 0,
@@ -259,7 +277,8 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
     const attempt = {
       expectedVersion: 0,
       mutationId: randomUUID(),
-      data: { ...inv(), documentNumber: "CANCEL-RACE-" + n },
+      // Its own amounts: two different invoices, not one entered twice.
+      data: { ...inv(), documentNumber: "CANCEL-RACE-" + n, totalAgorot: 11800 + n, finalAgorot: 11800 + n },
     };
     const cancelPath = "mutations/" + attempt.mutationId + "/cancel";
     const cancelRequest = () => api(cancelPath, { entity }, "POST");
@@ -330,7 +349,7 @@ test("Firebase emulators: actual Admin auth, Firestore transactions, persistence
   const shared = await api("invoices/invoice-shared-photo", {
     expectedVersion: 0,
     mutationId: randomUUID(),
-    data: { ...inv(), documentNumber: "SHARED-PHOTO", attachmentIds: [doc.id] },
+    data: { ...inv(), documentNumber: "SHARED-PHOTO", totalAgorot: 12500, finalAgorot: 12500, attachmentIds: [doc.id] },
   });
   assert.equal(shared.status, 200, await shared.clone().text());
   const linkPath = "invoices/invoice-inline-001/documents/" + doc.id;

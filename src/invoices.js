@@ -10,17 +10,51 @@ export const hash = (value) =>
         : JSON.stringify(value),
     )
     .digest("hex");
-// An invoice typed without its number cannot be told apart from the next one
-// from the same supplier, so it claims no number and blocks none: the guard
-// against entering the same invoice twice applies wherever a number was typed.
-const claimKey = (i) => {
+// Entering the same invoice twice is refused by two claims on one collection.
+// The number, where it was typed, is the identity the supplier printed. The
+// details every intake asks for identify it too: one supplier does not issue
+// two documents on the same date for the same total with the same VAT, so that
+// combination is claimed as well and an invoice typed without its number is
+// guarded like any other. Where that judgement is wrong the person says so
+// once, and the record then claims its details no more.
+const DUPLICATE = {
+  number: [
+    "DUPLICATE_INVOICE",
+    "כבר קיימת חשבונית עם המספר הזה אצל הספק. אפשר למצוא אותה בחיפוש.",
+  ],
+  details: [
+    "DUPLICATE_INVOICE_DETAILS",
+    "כבר נשמרה חשבונית של הספק הזה, באותו תאריך, באותו סכום ובאותו מע״מ. כנראה זו אותה חשבונית.",
+  ],
+};
+const claimKeys = (i) => {
   const number = (i.documentNumber || "")
     .normalize("NFKC")
     .replace(/\s/g, "")
     .toLowerCase();
-  return number
-    ? "invoiceKeys/" + hash([i.supplierId, i.documentType, number])
-    : null;
+  const keys = [];
+  // Unchanged since the first release: an invoice saved back then must keep
+  // hashing to the claim it already holds.
+  if (number)
+    keys.push({
+      kind: "number",
+      path: "invoiceKeys/" + hash([i.supplierId, i.documentType, number]),
+    });
+  if (!i.duplicateAllowed)
+    keys.push({
+      kind: "details",
+      path:
+        "invoiceKeys/" +
+        hash([
+          "details",
+          i.supplierId,
+          i.documentType,
+          i.invoiceDate,
+          i.totalAgorot ?? null,
+          i.vatAgorot ?? null,
+        ]),
+    });
+  return keys;
 };
 export class AccountingService {
   constructor(store, now = () => Date.now()) {
@@ -162,22 +196,24 @@ export class AccountingService {
                 "קובץ מצורף לא נמצא. יש להעלות אותו שוב.",
               );
         }
-        // Releasing a photo touches neither the supplier nor the document
-        // number, so it must not re-claim a number a tombstone gave up.
-        const newClaim = action === "detach" ? null : claimKey(next),
-          oldClaim = previous && action !== "detach" ? claimKey(previous) : null;
-        const occupied = newClaim ? await tx.get(newClaim) : null;
-        if (
-          action !== "delete" &&
-          occupied?.invoiceId &&
-          occupied.invoiceId !== id
-        )
-          fail(
-            409,
-            "DUPLICATE_INVOICE",
-            "כבר קיימת חשבונית עם המספר הזה אצל הספק. אפשר למצוא אותה בחיפוש.",
-            { invoiceId: occupied.invoiceId },
-          );
+        // Only entering an invoice, removing it or bringing it back touches its
+        // claims. Paying one, or releasing one of its photos, changes nothing
+        // it is identified by: it must not re-claim what a tombstone gave up,
+        // and it is never refused over an invoice saved before this guard was.
+        const claiming = ["save", "delete", "restore"].includes(action);
+        const newClaims = claiming ? claimKeys(next) : [],
+          oldClaims = claiming && previous ? claimKeys(previous) : [];
+        for (const claim of newClaims) {
+          const occupied = await tx.get(claim.path);
+          if (
+            action !== "delete" &&
+            occupied?.invoiceId &&
+            occupied.invoiceId !== id
+          )
+            fail(409, ...DUPLICATE[claim.kind], {
+              invoiceId: occupied.invoiceId,
+            });
+        }
         if (!previous) {
           next.status = "unpaid";
           next.payment = null;
@@ -195,11 +231,16 @@ export class AccountingService {
           next.payment = null;
         }
         // All transaction reads precede writes (Firestore requirement).
-        if (oldClaim && oldClaim !== newClaim)
-          tx.set(oldClaim, { id: oldClaim.split("/")[1], invoiceId: null });
-        if (newClaim)
-          tx.set(newClaim, {
-            id: newClaim.split("/")[1],
+        const kept = new Set(newClaims.map((claim) => claim.path));
+        for (const claim of oldClaims)
+          if (!kept.has(claim.path))
+            tx.set(claim.path, {
+              id: claim.path.split("/")[1],
+              invoiceId: null,
+            });
+        for (const claim of newClaims)
+          tx.set(claim.path, {
+            id: claim.path.split("/")[1],
             invoiceId: action === "delete" ? null : id,
           });
       }

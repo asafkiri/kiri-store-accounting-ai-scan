@@ -24,6 +24,14 @@ const body = (data, expectedVersion = 0) => ({
   expectedVersion,
   mutationId: randomUUID(),
 });
+// A different invoice of the same supplier on the same day: another total, with
+// the VAT that belongs to it.
+const amounts = (subtotal, rate = 0.18) => ({
+  subtotalAgorot: subtotal,
+  vatAgorot: Math.round(subtotal * rate),
+  totalAgorot: subtotal + Math.round(subtotal * rate),
+  finalAgorot: subtotal + Math.round(subtotal * rate),
+});
 test("unused supplier deletion is versioned, replayable and visible to other devices", async () => {
   const { service, store } = await fixture();
   const request = { expectedVersion: 1, mutationId: randomUUID() };
@@ -277,30 +285,108 @@ test("review is required and no unverified supplier or privileged fields can ent
   );
 });
 
-test("invoices typed without a number neither block each other nor lose the duplicate guard", async () => {
+test("invoices typed without a number are still guarded, by their supplier, date and amounts", async () => {
   const { service, store } = await fixture();
   const blank = { ...inv(), documentNumber: "" };
   const first = await service.saveInvoice("invoice-blank-1", body(blank), uid);
   assert.equal(first.record.documentNumber, "");
-  // A second invoice from the same supplier on the same day is a different
-  // invoice, not a duplicate: without numbers there is nothing to compare.
-  const second = await service.saveInvoice("invoice-blank-2", body(blank), uid);
-  assert.equal(second.record.id, "invoice-blank-2");
-  assert.equal((await store.list("invoiceKeys")).length, 0, "an invoice with no number claims none");
-  // Where a number was typed, entering it twice is still refused.
-  await service.saveInvoice("invoice-numbered", body({ ...inv(), documentNumber: "A-77" }), uid);
+  // The same supplier, date, total and VAT: the same invoice, entered twice.
   await assert.rejects(
-    service.saveInvoice("invoice-numbered-again", body({ ...inv(), documentNumber: "A-77" }), uid),
+    service.saveInvoice("invoice-blank-2", body(blank), uid),
+    e => e.code === "DUPLICATE_INVOICE_DETAILS" && e.status === 409 && e.details.invoiceId === "invoice-blank-1",
+  );
+  // A second delivery that day, for a different amount, is a different invoice.
+  const second = await service.saveInvoice(
+    "invoice-blank-2",
+    body({ ...blank, subtotalAgorot: 5000, vatAgorot: 900, totalAgorot: 5900, finalAgorot: 5900 }),
+    uid,
+  );
+  assert.equal(second.record.id, "invoice-blank-2");
+  // Where a number was typed, entering it twice is refused by the number, even
+  // when the amounts were typed differently the second time.
+  await service.saveInvoice("invoice-numbered", body({ ...inv(), ...amounts(7000), documentNumber: "A-77" }), uid);
+  await assert.rejects(
+    service.saveInvoice("invoice-numbered-again", body({ ...inv(), ...amounts(8000), documentNumber: "A-77" }), uid),
     e => e.code === "DUPLICATE_INVOICE",
   );
   // Adding the number later claims it; clearing it again releases the claim.
   const numbered = await service.saveInvoice("invoice-blank-1", body({ ...blank, documentNumber: "B-88" }, 1), uid);
   assert.equal(numbered.record.documentNumber, "B-88");
   await assert.rejects(
-    service.saveInvoice("invoice-blank-3", body({ ...inv(), documentNumber: "B-88" }), uid),
+    service.saveInvoice("invoice-blank-3", body({ ...inv(), ...amounts(9000), documentNumber: "B-88" }), uid),
     e => e.code === "DUPLICATE_INVOICE",
   );
   await service.saveInvoice("invoice-blank-1", body(blank, 2), uid);
-  const released = await service.saveInvoice("invoice-blank-3", body({ ...inv(), documentNumber: "B-88" }), uid);
+  const released = await service.saveInvoice("invoice-blank-3", body({ ...inv(), ...amounts(9000), documentNumber: "B-88" }), uid);
   assert.equal(released.record.documentNumber, "B-88");
+  assert.equal((await store.get("invoices/invoice-blank-1")).duplicateAllowed, undefined);
+});
+
+test("the same supplier, date and amounts can be saved twice once the person says they are two invoices", async () => {
+  const { service, store } = await fixture();
+  const twin = { ...inv(), documentNumber: "" };
+  await service.saveInvoice("invoice-twin-1", body(twin), uid);
+  await assert.rejects(
+    service.saveInvoice("invoice-twin-2", body(twin), uid),
+    e => e.code === "DUPLICATE_INVOICE_DETAILS",
+  );
+  const allowed = await service.saveInvoice("invoice-twin-2", body({ ...twin, duplicateAllowed: true }), uid);
+  assert.equal(allowed.record.duplicateAllowed, true);
+  // Saying so once is enough: paying it later, or editing it, is not refused
+  // for the twin it was already told apart from.
+  const paid = await service.actInvoice(
+    "invoice-twin-2",
+    "pay",
+    { expectedVersion: 1, mutationId: randomUUID(), payment: { method: "cash", paymentDate: "2026-09-11", checkNumber: "", checkDueDate: null, notes: "" } },
+    uid,
+  );
+  assert.equal(paid.record.status, "paid");
+  assert.equal((await service.saveInvoice("invoice-twin-2", body({ ...twin, notes: "העתק" }, 2), uid)).record.duplicateAllowed, true);
+  // The invoice that was saved first still holds the claim, so a third entry of
+  // the same details is refused like the second was.
+  await assert.rejects(
+    service.saveInvoice("invoice-twin-3", body(twin), uid),
+    e => e.code === "DUPLICATE_INVOICE_DETAILS" && e.details.invoiceId === "invoice-twin-1",
+  );
+  // Correcting the first invoice's total releases the details it claimed.
+  await service.saveInvoice("invoice-twin-1", body({ ...twin, ...amounts(4400) }, 1), uid);
+  assert.equal((await service.saveInvoice("invoice-twin-3", body(twin), uid)).record.id, "invoice-twin-3");
+  assert.equal((await store.list("invoiceKeys")).filter(k => k.invoiceId).length, 2);
+});
+
+test("an invoice saved before the guard existed is still paid, even when its details are claimed", async () => {
+  const { service, store } = await fixture();
+  const twin = { ...inv(), documentNumber: "" };
+  await service.saveInvoice("invoice-new", body(twin), uid);
+  // What the store held before this guard: an invoice with no claim of its own.
+  await store.transaction(async tx => {
+    tx.set("invoices/invoice-legacy", {
+      ...twin, id: "invoice-legacy", version: 1, status: "unpaid", payment: null,
+      createdAt: 1, updatedAt: 1, createdBy: uid, updatedBy: uid, deletedAt: null,
+    });
+  });
+  const paid = await service.actInvoice(
+    "invoice-legacy",
+    "pay",
+    { expectedVersion: 1, mutationId: randomUUID(), payment: { method: "cash", paymentDate: "2026-09-11", checkNumber: "", checkDueDate: null, notes: "" } },
+    uid,
+  );
+  assert.equal(paid.record.status, "paid");
+  assert.equal((await store.get("invoiceKeys/" + (await store.list("invoiceKeys"))[0].id)).invoiceId, "invoice-new",
+    "paying claims nothing, so the claim stays with the invoice that made it");
+});
+
+test("deleting an invoice frees the details it claimed, and restoring it takes them back", async () => {
+  const { service } = await fixture();
+  const twin = { ...inv(), documentNumber: "" };
+  await service.saveInvoice("invoice-gone", body(twin), uid);
+  await service.actInvoice("invoice-gone", "delete", { expectedVersion: 1, mutationId: randomUUID() }, uid);
+  const again = await service.saveInvoice("invoice-again", body(twin), uid);
+  assert.equal(again.record.id, "invoice-again");
+  // Restoring the deleted invoice would bring the same details back, so it is
+  // refused while the one typed in its place holds them.
+  await assert.rejects(
+    service.actInvoice("invoice-gone", "restore", { expectedVersion: 2, mutationId: randomUUID() }, uid),
+    e => e.code === "DUPLICATE_INVOICE_DETAILS" && e.details.invoiceId === "invoice-again",
+  );
 });

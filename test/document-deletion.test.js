@@ -44,11 +44,17 @@ async function setup({ retentionDays = 365, now = () => Date.now() } = {}) {
 // that can hold a file. Keeping the fixture on that path keeps the reference
 // count honest.
 async function saveInvoice(accounting, id, attachmentIds, extra = {}) {
+  // Each fixture invoice is a different document: same supplier and date, its
+  // own number and its own total, so the guard against entering one invoice
+  // twice never stands in for what these tests are about.
+  const nth = Number(id.replace(/\D/g, "")) || 1;
   const saved = await accounting.saveInvoice(
     id,
     body({
       ...inv(),
       documentNumber: id,
+      totalAgorot: inv().totalAgorot + nth,
+      finalAgorot: inv().finalAgorot + nth,
       attachmentIds,
       ...extra,
     }),

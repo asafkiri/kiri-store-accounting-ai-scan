@@ -100,6 +100,7 @@ export function invoice(v) {
     "source",
     "scanJobId",
     "reviewConfirmed",
+    "duplicateAllowed",
     "newSupplier",
     "reactivateSupplier",
   ]);
@@ -139,6 +140,14 @@ export function invoice(v) {
     deductions,
     notes: str(v.notes, 4000),
     attachmentIds: [...new Set(v.attachmentIds.map(id))],
+    // Two documents from one supplier, on one date, for one amount are the same
+    // invoice entered twice unless the person says otherwise. Saying it is kept
+    // on the record, so paying or editing that invoice later is not refused for
+    // a twin it was already told apart from. Omitting the field keeps whatever
+    // was said before; sending false asks for the guard back.
+    ...(v.duplicateAllowed === undefined
+      ? {}
+      : { duplicateAllowed: v.duplicateAllowed === true }),
     // Every invoice is typed from the paper. The two fields a reading once
     // filled are still accepted from an older page and ignored.
     source: "manual",
